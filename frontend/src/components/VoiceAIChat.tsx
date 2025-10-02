@@ -26,6 +26,56 @@ interface SessionData {
   livekit_url: string;
 }
 
+// Synthesis Completion Tracking System
+class SynthesisTracker {
+  private synthesisId: number | null;
+  private isAudioPlaying: boolean;
+  private completionCallbacks: Array<(synthesisId: number | null) => void>;
+
+  constructor() {
+    this.synthesisId = null;
+    this.isAudioPlaying = false;
+    this.completionCallbacks = [];
+  }
+
+  startSynthesis(text: string): number {
+    this.synthesisId = Date.now() + Math.random();
+    this.isAudioPlaying = true;
+    console.log(`[SYNTHESIS-${this.synthesisId}] Started: "${text.substring(0, 30)}..."`);
+    return this.synthesisId;
+  }
+
+  completeSynthesis(synthesisId: number): void {
+    if (this.synthesisId === synthesisId) {
+      this.isAudioPlaying = false;
+      console.log(`[SYNTHESIS-${synthesisId}] COMPLETED - Safe to restart listening`);
+      
+      // Trigger all completion callbacks
+      this.completionCallbacks.forEach(callback => callback(synthesisId));
+      this.completionCallbacks = [];
+      this.synthesisId = null;
+    }
+  }
+
+  onSynthesisComplete(callback: (synthesisId: number | null) => void): void {
+    if (!this.isAudioPlaying) {
+      callback(null); // Already complete
+    } else {
+      this.completionCallbacks.push(callback);
+    }
+  }
+
+  isComplete(): boolean {
+    return !this.isAudioPlaying;
+  }
+
+  reset(): void {
+    this.synthesisId = null;
+    this.isAudioPlaying = false;
+    this.completionCallbacks = [];
+  }
+}
+
 const VoiceAIChat: React.FC = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [isRoomReady, setIsRoomReady] = useState(false);
@@ -47,6 +97,7 @@ const VoiceAIChat: React.FC = () => {
   const audioChunksRef = useRef<Blob[]>([]);
   const recognitionRef = useRef<any>(null);
   const conversationEndRef = useRef<HTMLDivElement>(null);
+  const synthesisTrackerRef = useRef<SynthesisTracker>(new SynthesisTracker());
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -372,25 +423,15 @@ const VoiceAIChat: React.FC = () => {
       };
 
       recognition.onend = () => {
-        console.log('Speech recognition ended');
+        console.log('[RECOGNITION-END] Speech recognition ended');
         // Clear the reference when recognition ends
         if (recognitionRef.current === recognition) {
           recognitionRef.current = null;
         }
         
+        // No automatic restart - synthesis completion handler will manage restarts
         if (isRecording && isConnected && isRoomReady && !isAISpeaking) {
-          console.log('Restarting speech recognition...');
-          setTimeout(() => {
-            try {
-              // Only restart if we don't already have an active recognition
-              if (!recognitionRef.current && !isAISpeaking && isRoomReady) {
-                startAudioMonitoring(null);
-              }
-            } catch (e) {
-              console.error('Error restarting speech recognition:', e);
-              setError('Failed to restart speech recognition. Please try stopping and starting the conversation again.');
-            }
-          }, 500);
+          console.log('[RECOGNITION-END] Recognition ended, waiting for synthesis completion to restart');
         }
       };
 
@@ -416,8 +457,36 @@ const VoiceAIChat: React.FC = () => {
     }
   }, [isRoomReady, isRecording, isConnected, isAISpeaking, startAudioMonitoring]);
 
+  // Centralized synthesis completion handler - ONLY place that restarts speech recognition
+  useEffect(() => {
+    const handleSynthesisComplete = (synthesisId: number | null) => {
+      console.log(`[RESTART-TRIGGER] Synthesis ${synthesisId} confirmed complete`);
+      
+      // Enhanced safety checks with echo cancellation consideration
+      if (sessionRef.current && isRoomReady && !recognitionRef.current && !isAISpeaking) {
+        setTimeout(() => {
+          // Double-check conditions after safety delay
+          if (sessionRef.current && isRoomReady && !recognitionRef.current && !isAISpeaking) {
+            console.log('[RESTART-AUTHORIZED] Starting speech recognition after synthesis completion');
+            startAudioMonitoring(null);
+          } else {
+            console.log('[RESTART-BLOCKED] Conditions changed during safety delay');
+          }
+        }, 500); // Extra safety buffer for echo cancellation
+      } else {
+        console.log('[RESTART-BLOCKED] Session/room not ready or recognition already active');
+      }
+    };
+
+    // Register the completion handler
+    synthesisTrackerRef.current.onSynthesisComplete(handleSynthesisComplete);
+  }, [isRoomReady, isAISpeaking, startAudioMonitoring]);
+
   const speakTextWithPause = async (text: string) => {
     console.log('AI starting to speak - speech recognition already paused');
+    
+    // Start synthesis tracking
+    const synthesisId = synthesisTrackerRef.current.startSynthesis(text);
     
     // Clear any current transcript when AI starts speaking
     setCurrentTranscript('');
@@ -455,43 +524,33 @@ const VoiceAIChat: React.FC = () => {
       const audio = new Audio(audioUrl);
       audio.volume = 0.8;
 
-      // Set up the same event handlers as speechSynthesis
+      // Set up synthesis completion tracking
       audio.onended = () => {
-        console.log('OpenAI TTS audio ended - starting 700ms delay before resuming recognition');
+        console.log('[AUDIO-END] OpenAI TTS audio ended');
         
         // Clean up the blob URL
         URL.revokeObjectURL(audioUrl);
         
-        // Use the same timing logic as before
+        // Signal synthesis completion (no automatic restart)
         setIsAISpeaking(false);
         
         setTimeout(() => {
-          console.log('700ms delay complete - attempting to restart speech recognition');
-          
-          if (sessionRef.current && isRoomReady && !recognitionRef.current) {
-            console.log('Session exists, room ready, and no active recognition - starting audio monitoring...');
-            startAudioMonitoring(null);
-          } else {
-            console.log('Cannot restart speech recognition - session/room not ready or recognition already active');
-          }
-        }, 700); // Same 700ms delay as before
+          console.log('[SYNTHESIS-COMPLETE] Marking synthesis as complete');
+          synthesisTrackerRef.current.completeSynthesis(synthesisId);
+        }, 700); // Same 700ms delay for safety
       };
 
       audio.onerror = (event) => {
-        console.error('OpenAI TTS audio error:', event);
+        console.error('[AUDIO-ERROR] OpenAI TTS audio error:', event);
         setIsAISpeaking(false);
         
         // Clean up the blob URL
         URL.revokeObjectURL(audioUrl);
         
-        // Same error recovery as before
+        // Signal synthesis completion even on error
         setTimeout(() => {
-          if (sessionRef.current && isRoomReady && !recognitionRef.current) {
-            console.log('Restarting speech recognition after TTS error...');
-            startAudioMonitoring(null);
-          } else {
-            console.log('Cannot restart speech recognition after TTS error - session/room not ready or recognition already active');
-          }
+          console.log('[SYNTHESIS-ERROR-COMPLETE] Marking synthesis as complete after error');
+          synthesisTrackerRef.current.completeSynthesis(synthesisId);
         }, 1000);
       };
 
@@ -512,29 +571,20 @@ const VoiceAIChat: React.FC = () => {
         utterance.volume = 0.8;
         
         utterance.onend = () => {
-          console.log('Browser TTS fallback ended - starting 700ms delay before resuming recognition');
+          console.log('[BROWSER-TTS-END] Browser TTS fallback ended');
           setIsAISpeaking(false);
           setTimeout(() => {
-            console.log('700ms delay complete after browser TTS - attempting to restart speech recognition');
-            if (sessionRef.current && isRoomReady && !recognitionRef.current) {
-              console.log('Session exists, room ready, and no active recognition - starting audio monitoring after browser TTS...');
-              startAudioMonitoring(null);
-            } else {
-              console.log('Cannot restart speech recognition after browser TTS - session/room not ready or recognition already active');
-            }
+            console.log('[BROWSER-TTS-COMPLETE] Marking browser TTS synthesis as complete');
+            synthesisTrackerRef.current.completeSynthesis(synthesisId);
           }, 700);
         };
         
         utterance.onerror = (event) => {
-          console.error('Browser TTS fallback error:', event);
+          console.error('[BROWSER-TTS-ERROR] Browser TTS fallback error:', event);
           setIsAISpeaking(false);
           setTimeout(() => {
-            if (sessionRef.current && isRoomReady && !recognitionRef.current) {
-              console.log('Restarting speech recognition after browser TTS error...');
-              startAudioMonitoring(null);
-            } else {
-              console.log('Cannot restart speech recognition after browser TTS error - session/room not ready or recognition already active');
-            }
+            console.log('[BROWSER-TTS-ERROR-COMPLETE] Marking browser TTS synthesis as complete after error');
+            synthesisTrackerRef.current.completeSynthesis(synthesisId);
           }, 1000);
         };
         
@@ -549,8 +599,30 @@ const VoiceAIChat: React.FC = () => {
 
   const testMicrophone = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      console.log('Microphone access granted');
+      // Enhanced audio constraints with echo cancellation
+      const constraints = {
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 44100,
+          channelCount: 1
+        }
+      };
+      
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      console.log('Microphone access granted with echo cancellation enabled');
+      
+      // Log the actual constraints that were applied
+      const track = stream.getAudioTracks()[0];
+      const settings = track.getSettings();
+      console.log('Audio settings applied:', {
+        echoCancellation: settings.echoCancellation,
+        noiseSuppression: settings.noiseSuppression,
+        autoGainControl: settings.autoGainControl,
+        sampleRate: settings.sampleRate
+      });
+      
       stream.getTracks().forEach(track => track.stop());
       return true;
     } catch (err) {
