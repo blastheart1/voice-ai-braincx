@@ -1,11 +1,16 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 import asyncio
 import json
 import logging
 from typing import Dict, List
 import uuid
+from pydantic import BaseModel
+
+# Configure logging first
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 from services.livekit_service import LiveKitService
 from services.ai_service import AIService
@@ -21,10 +26,6 @@ except ValueError as e:
     logger.error("Please check your .env file and ensure all required API keys are set")
     exit(1)
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 app = FastAPI(title="Voice AI Backend", version="1.0.0")
 
 # Configure CORS
@@ -39,6 +40,11 @@ app.add_middleware(
 # Services
 livekit_service = LiveKitService()
 ai_service = AIService()
+
+# Request models
+class TTSRequest(BaseModel):
+    text: str
+    voice: str = "nova"
 
 # Active sessions
 active_sessions: Dict[str, dict] = {}
@@ -246,6 +252,37 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             await websocket.send_text(json.dumps({"error": str(e)}))
         except:
             pass
+
+@app.post("/api/tts")
+async def text_to_speech_endpoint(request: TTSRequest):
+    """Generate speech from text using OpenAI TTS"""
+    try:
+        logger.info(f"TTS request: text='{request.text[:50]}...', voice='{request.voice}'")
+        
+        if not request.text.strip():
+            raise HTTPException(status_code=400, detail="Text is required")
+        
+        # Generate TTS using existing AI service
+        audio_data = await ai_service.text_to_speech(request.text, request.voice)
+        
+        if not audio_data:
+            raise HTTPException(status_code=500, detail="Failed to generate speech")
+        
+        logger.info(f"TTS generated successfully, audio size: {len(audio_data)} bytes")
+        
+        # Return audio as response
+        return Response(
+            content=audio_data,
+            media_type="audio/mpeg",
+            headers={
+                "Content-Disposition": "inline; filename=speech.mp3",
+                "Cache-Control": "no-cache"
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in TTS endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

@@ -97,21 +97,22 @@ class AIService:
             logger.error(f"Error transcribing audio: {str(e)}")
             return ""
     
-    async def text_to_speech(self, text: str) -> bytes:
+    async def text_to_speech(self, text: str, voice: str = "nova") -> bytes:
         """Convert text to speech using OpenAI TTS"""
         try:
+            logger.info(f"Calling OpenAI TTS with model=tts-1-hd, voice={voice}, text_length={len(text)}")
             response = await self.client.audio.speech.create(
-                model="tts-1",
-                voice="alloy",  # You can change this to: alloy, echo, fable, onyx, nova, shimmer
+                model="tts-1-hd",  # Higher quality model
+                voice=voice,  # Use the provided voice parameter
                 input=text,
                 response_format="mp3"
             )
+            logger.info("OpenAI TTS response received successfully")
             
-            audio_data = b""
-            async for chunk in response.iter_bytes():
-                audio_data += chunk
+            # Get the audio content directly
+            audio_data = response.content
             
-            logger.info(f"Generated TTS audio for text: {text[:50]}...")
+            logger.info(f"Generated TTS audio for text: {text[:50]}..., audio size: {len(audio_data)} bytes")
             return audio_data
             
         except Exception as e:

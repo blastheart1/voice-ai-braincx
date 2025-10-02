@@ -30,3 +30,11 @@ class Config:
             raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
 
 config = Config()
+
+# Debug: Check if API key is loaded
+import logging
+debug_logger = logging.getLogger(__name__)
+if config.OPENAI_API_KEY:
+    debug_logger.info(f"OpenAI API key loaded: {config.OPENAI_API_KEY[:10]}...{config.OPENAI_API_KEY[-4:]}")
+else:
+    debug_logger.error("OpenAI API key is empty!")

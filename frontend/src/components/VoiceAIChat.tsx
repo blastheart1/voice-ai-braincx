@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Room, RoomEvent, Track, RemoteTrack, RemoteParticipant } from 'livekit-client';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Mic, MicOff, Trash2, LogOut, Send, Loader2, Volume2, MessageSquare } from 'lucide-react';
+import { Mic, MicOff, Trash2, LogOut, Send, Loader2, Volume2, MessageSquare, Clock } from 'lucide-react';
 import { Alert, AlertDescription } from './ui/alert';
 import { Card, CardContent } from './ui/card';
 
@@ -28,6 +28,7 @@ interface SessionData {
 
 const VoiceAIChat: React.FC = () => {
   const [isConnected, setIsConnected] = useState(false);
+  const [isRoomReady, setIsRoomReady] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [conversation, setConversation] = useState<ConversationEntry[]>([]);
   const [currentTranscript, setCurrentTranscript] = useState('');
@@ -95,11 +96,18 @@ const VoiceAIChat: React.FC = () => {
     room.on(RoomEvent.Connected, () => {
       console.log('Connected to LiveKit room');
       setIsConnected(true);
+      
+      // Wait 3 seconds after room connection before allowing initialization
+      setTimeout(() => {
+        console.log('Room is ready for initialization after 3-second delay');
+        setIsRoomReady(true);
+      }, 3000);
     });
 
     room.on(RoomEvent.Disconnected, () => {
       console.log('Disconnected from LiveKit room');
       setIsConnected(false);
+      setIsRoomReady(false);
     });
 
     room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, publication: any, participant: RemoteParticipant) => {
@@ -168,6 +176,9 @@ const VoiceAIChat: React.FC = () => {
         
         setConversation(prev => [...prev, aiResponse]);
         setIsProcessing(false);
+        
+        // Immediately pause microphone input when AI response is received
+        setIsAISpeaking(true);
         
         setTimeout(() => {
           speakTextWithPause(data.text);
@@ -264,13 +275,16 @@ const VoiceAIChat: React.FC = () => {
   const startAudioMonitoring = useCallback((audioTrack: any) => {
     console.log('Starting audio monitoring for user speech');
     
+    // Check if room is ready before starting speech recognition
+    if (!isRoomReady) {
+      console.log('Room not ready yet, waiting for 3-second delay to complete');
+      return;
+    }
+    
+    // Check if speech recognition is already running
     if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-        recognitionRef.current = null;
-      } catch (e) {
-        console.log('Cleaned up existing recognition');
-      }
+      console.log('Speech recognition already exists, skipping start');
+      return;
     }
     
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
@@ -317,6 +331,21 @@ const VoiceAIChat: React.FC = () => {
 
         if (finalTranscript) {
           console.log('User speech detected:', finalTranscript);
+          
+          // Check if this might be AI speech being picked up by microphone
+          const aiPhrases = [
+            'of course', 'i\'d be happy to help', 'what specifically', 'need assistance',
+            'how can i help', 'what can i do', 'i\'m here to help', 'let me know'
+          ];
+          
+          const lowerTranscript = finalTranscript.toLowerCase();
+          const isLikelyAISpeech = aiPhrases.some(phrase => lowerTranscript.includes(phrase));
+          
+          if (isLikelyAISpeech) {
+            console.log('Detected potential AI speech feedback, ignoring:', finalTranscript);
+            return;
+          }
+          
           setTranscriptLog(prev => [...prev.slice(-4), finalTranscript]);
           handleUserSpeech(finalTranscript);
           setCurrentTranscript('');
@@ -344,12 +373,18 @@ const VoiceAIChat: React.FC = () => {
 
       recognition.onend = () => {
         console.log('Speech recognition ended');
-        if (isRecording && isConnected && !isAISpeaking) {
+        // Clear the reference when recognition ends
+        if (recognitionRef.current === recognition) {
+          recognitionRef.current = null;
+        }
+        
+        if (isRecording && isConnected && isRoomReady && !isAISpeaking) {
           console.log('Restarting speech recognition...');
           setTimeout(() => {
             try {
-              if (!isAISpeaking) {
-                recognition.start();
+              // Only restart if we don't already have an active recognition
+              if (!recognitionRef.current && !isAISpeaking && isRoomReady) {
+                startAudioMonitoring(null);
               }
             } catch (e) {
               console.error('Error restarting speech recognition:', e);
@@ -371,113 +406,144 @@ const VoiceAIChat: React.FC = () => {
     } else {
       setError('Speech recognition not supported in this browser. Please use Chrome, Edge, or Safari.');
     }
-  }, [isRecording, isConnected, isAISpeaking, handleUserSpeech, isMuted]);
+  }, [isRecording, isConnected, isRoomReady, isAISpeaking, handleUserSpeech, isMuted]);
+
+  // Start audio monitoring when room becomes ready (only for initial setup)
+  useEffect(() => {
+    if (isRoomReady && isRecording && isConnected && !isAISpeaking && !recognitionRef.current) {
+      console.log('Room is ready, starting initial audio monitoring');
+      startAudioMonitoring(null);
+    }
+  }, [isRoomReady, isRecording, isConnected, isAISpeaking, startAudioMonitoring]);
 
   const speakTextWithPause = async (text: string) => {
-    if ('speechSynthesis' in window) {
-      console.log('AI starting to speak - pausing speech recognition');
-      setIsAISpeaking(true);
-      
-      // Clear any current transcript when AI starts speaking
-      setCurrentTranscript('');
-      
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch (e) {
-          console.log('Speech recognition already stopped');
-        }
+    console.log('AI starting to speak - speech recognition already paused');
+    
+    // Clear any current transcript when AI starts speaking
+    setCurrentTranscript('');
+    
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {
+        console.log('Speech recognition already stopped');
+      }
+    }
+
+    try {
+      // Call OpenAI TTS endpoint
+      const response = await fetch('http://localhost:8000/api/tts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          text: text,
+          voice: 'nova' // nova sounds more natural and feminine
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`TTS request failed: ${response.statusText}`);
       }
 
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 0.9;
-      utterance.pitch = 1;
-      utterance.volume = 0.8;
+      // Get audio data as blob
+      const audioBlob = await response.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
       
-      const voices = speechSynthesis.getVoices();
-      const femaleVoice = voices.find(voice => 
-        voice.name.includes('Female') || 
-        voice.name.includes('Samantha') ||
-        voice.name.includes('Karen') ||
-        voice.name.includes('Moira')
-      );
-      
-      if (femaleVoice) {
-        utterance.voice = femaleVoice;
-      }
+      // Create HTML5 Audio element (replaces speechSynthesis)
+      const audio = new Audio(audioUrl);
+      audio.volume = 0.8;
 
-      utterance.onend = () => {
-        console.log('TTS utterance ended - waiting for speech synthesis to fully complete');
+      // Set up the same event handlers as speechSynthesis
+      audio.onended = () => {
+        console.log('OpenAI TTS audio ended - starting 700ms delay before resuming recognition');
         
-        const checkSpeechFinished = () => {
-          if (speechSynthesis.speaking) {
-            console.log('Speech synthesis still speaking, waiting...');
-            setTimeout(checkSpeechFinished, 100);
-          } else {
-            console.log('Speech synthesis completely finished - starting 700ms delay before resuming recognition');
-            setIsAISpeaking(false);
-            
-            setTimeout(() => {
-              console.log('700ms delay complete - attempting to restart speech recognition');
-              
-              const currentRecording = sessionRef.current !== null;
-              const currentConnected = roomRef.current?.state === 'connected';
-              
-              console.log('Checking restart conditions:', {
-                currentRecording,
-                currentConnected,
-                hasRecognition: !!recognitionRef.current,
-                sessionExists: !!sessionRef.current,
-                roomState: roomRef.current?.state,
-                speechSynthesisSpeaking: speechSynthesis.speaking
-              });
-              
-              if (recognitionRef.current && sessionRef.current && !speechSynthesis.speaking) {
-                try {
-                  console.log('Attempting to restart speech recognition...');
-                  recognitionRef.current.start();
-                  console.log('Speech recognition resumed successfully');
-                } catch (e) {
-                  console.error('Error resuming speech recognition:', e);
-                  console.log('Attempting to recreate speech recognition...');
-                  startAudioMonitoring(null);
-                }
-              } else {
-                console.log('Cannot restart speech recognition - conditions not met or still speaking');
-                if (sessionRef.current && !speechSynthesis.speaking) {
-                  console.log('Session exists and not speaking, recreating speech recognition...');
-                  startAudioMonitoring(null);
-                }
-              }
-            }, 700);
-          }
-        };
+        // Clean up the blob URL
+        URL.revokeObjectURL(audioUrl);
         
-        checkSpeechFinished();
-      };
-
-      utterance.onerror = (event) => {
-        console.log('TTS error - resuming speech recognition', event);
+        // Use the same timing logic as before
         setIsAISpeaking(false);
         
         setTimeout(() => {
-          if (recognitionRef.current && sessionRef.current) {
-            try {
-              console.log('Restarting speech recognition after TTS error...');
-              recognitionRef.current.start();
-              console.log('Speech recognition resumed after TTS error');
-            } catch (e) {
-              console.error('Error resuming speech recognition after TTS error:', e);
-              startAudioMonitoring(null);
-            }
-          } else if (sessionRef.current) {
-            console.log('Recreating speech recognition after TTS error...');
+          console.log('700ms delay complete - attempting to restart speech recognition');
+          
+          if (sessionRef.current && isRoomReady && !recognitionRef.current) {
+            console.log('Session exists, room ready, and no active recognition - starting audio monitoring...');
             startAudioMonitoring(null);
+          } else {
+            console.log('Cannot restart speech recognition - session/room not ready or recognition already active');
+          }
+        }, 700); // Same 700ms delay as before
+      };
+
+      audio.onerror = (event) => {
+        console.error('OpenAI TTS audio error:', event);
+        setIsAISpeaking(false);
+        
+        // Clean up the blob URL
+        URL.revokeObjectURL(audioUrl);
+        
+        // Same error recovery as before
+        setTimeout(() => {
+          if (sessionRef.current && isRoomReady && !recognitionRef.current) {
+            console.log('Restarting speech recognition after TTS error...');
+            startAudioMonitoring(null);
+          } else {
+            console.log('Cannot restart speech recognition after TTS error - session/room not ready or recognition already active');
           }
         }, 1000);
       };
 
-      speechSynthesis.speak(utterance);
+      // Start playing the audio
+      await audio.play();
+      console.log('OpenAI TTS audio started playing');
+
+    } catch (error) {
+      console.error('Error with OpenAI TTS:', error);
+      
+      // Fallback to browser TTS if OpenAI fails
+      console.log('Falling back to browser TTS...');
+      if ('speechSynthesis' in window) {
+        // Keep isAISpeaking true during browser TTS fallback
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 0.9;
+        utterance.pitch = 1;
+        utterance.volume = 0.8;
+        
+        utterance.onend = () => {
+          console.log('Browser TTS fallback ended - starting 700ms delay before resuming recognition');
+          setIsAISpeaking(false);
+          setTimeout(() => {
+            console.log('700ms delay complete after browser TTS - attempting to restart speech recognition');
+            if (sessionRef.current && isRoomReady && !recognitionRef.current) {
+              console.log('Session exists, room ready, and no active recognition - starting audio monitoring after browser TTS...');
+              startAudioMonitoring(null);
+            } else {
+              console.log('Cannot restart speech recognition after browser TTS - session/room not ready or recognition already active');
+            }
+          }, 700);
+        };
+        
+        utterance.onerror = (event) => {
+          console.error('Browser TTS fallback error:', event);
+          setIsAISpeaking(false);
+          setTimeout(() => {
+            if (sessionRef.current && isRoomReady && !recognitionRef.current) {
+              console.log('Restarting speech recognition after browser TTS error...');
+              startAudioMonitoring(null);
+            } else {
+              console.log('Cannot restart speech recognition after browser TTS error - session/room not ready or recognition already active');
+            }
+          }, 1000);
+        };
+        
+        speechSynthesis.speak(utterance);
+      } else {
+        // No TTS available, just reset the state
+        console.error('No TTS available (neither OpenAI nor browser TTS)');
+        setIsAISpeaking(false);
+      }
     }
   };
 
@@ -710,7 +776,7 @@ const VoiceAIChat: React.FC = () => {
                 {/* Status Banner */}
                 <AnimatePresence mode="wait">
                   <motion.div
-                    key={isAISpeaking ? 'speaking' : isProcessing ? 'processing' : isMuted ? 'muted' : 'listening'}
+                    key={isAISpeaking ? 'speaking' : isProcessing ? 'processing' : !isRoomReady && isConnected ? 'waiting' : isMuted ? 'muted' : 'listening'}
                     initial={{ opacity: 0, y: -10, scale: 0.95 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, y: -10, scale: 0.95 }}
@@ -720,6 +786,8 @@ const VoiceAIChat: React.FC = () => {
                         ? 'bg-purple-50/80 dark:bg-purple-950/30 border-purple-200/50 dark:border-purple-800/50 shadow-purple-500/10'
                         : isProcessing
                         ? 'bg-amber-50/80 dark:bg-amber-950/30 border-amber-200/50 dark:border-amber-800/50 shadow-amber-500/10'
+                        : !isRoomReady && isConnected
+                        ? 'bg-blue-50/80 dark:bg-blue-950/30 border-blue-200/50 dark:border-blue-800/50 shadow-blue-500/10'
                         : isMuted
                         ? 'bg-red-50/80 dark:bg-red-950/30 border-red-200/50 dark:border-red-800/50 shadow-red-500/10'
                         : 'bg-green-50/80 dark:bg-green-950/30 border-green-200/50 dark:border-green-800/50 shadow-green-500/10'
@@ -735,6 +803,11 @@ const VoiceAIChat: React.FC = () => {
                         <>
                           <Loader2 className="w-6 h-6 text-amber-600 dark:text-amber-400 animate-spin" />
                           <span className="text-amber-900 dark:text-amber-100 font-medium text-lg">AI is thinking...</span>
+                        </>
+                      ) : !isRoomReady && isConnected ? (
+                        <>
+                          <Clock className="w-6 h-6 text-blue-600 dark:text-blue-400 animate-pulse" />
+                          <span className="text-blue-900 dark:text-blue-100 font-medium text-lg">Room connecting... please wait 3 seconds before speaking</span>
                         </>
                       ) : currentTranscript ? (
                         <>
