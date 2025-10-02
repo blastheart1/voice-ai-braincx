@@ -100,6 +100,12 @@
   border: 1px solid rgba(33, 150, 243, 0.3);
 }
 
+.speaking-indicator {
+  background: rgba(156, 39, 176, 0.1);
+  color: #7b1fa2;
+  border: 1px solid rgba(156, 39, 176, 0.3);
+}
+
 .status-dot {
   width: 8px;
   height: 8px;
@@ -143,6 +149,23 @@
 @keyframes spin {
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
+}
+
+.speaking-animation {
+  display: inline-block;
+  animation: speaking-pulse 1s infinite ease-in-out;
+  font-size: 16px;
+}
+
+@keyframes speaking-pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 0.8;
+  }
 }
 
 .current-transcript {

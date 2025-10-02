@@ -29,6 +29,7 @@ const VoiceAIChat: React.FC = () => {
   const [conversation, setConversation] = useState<ConversationEntry[]>([]);
   const [currentTranscript, setCurrentTranscript] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isAISpeaking, setIsAISpeaking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const roomRef = useRef<Room | null>(null);
@@ -140,14 +141,8 @@ const VoiceAIChat: React.FC = () => {
       const data = JSON.parse(event.data);
       
       if (data.type === 'transcript') {
-        // User speech was transcribed by the backend
-        const userEntry: ConversationEntry = {
-          role: 'user',
-          content: data.text,
-          timestamp: new Date().toISOString()
-        };
-        
-        setConversation(prev => [...prev, userEntry]);
+        // User speech was transcribed by the backend - just confirm receipt
+        console.log('Backend confirmed transcript:', data.text);
         setCurrentTranscript('');
         setIsProcessing(true);
         
@@ -163,7 +158,7 @@ const VoiceAIChat: React.FC = () => {
         setIsProcessing(false);
         
         // Play AI response using browser TTS for immediate feedback
-        speakText(data.text);
+        speakTextWithPause(data.text);
         
       } else if (data.type === 'error') {
         console.error('Backend error:', data.message);
@@ -273,12 +268,14 @@ const VoiceAIChat: React.FC = () => {
 
       recognition.onend = () => {
         console.log('Speech recognition ended');
-        if (isRecording && isConnected) {
+        if (isRecording && isConnected && !isAISpeaking) {
           console.log('Restarting speech recognition...');
           // Add a small delay before restarting to prevent rapid restarts
           setTimeout(() => {
             try {
-              recognition.start();
+              if (!isAISpeaking) { // Double check AI isn't speaking
+                recognition.start();
+              }
             } catch (e) {
               console.error('Error restarting speech recognition:', e);
               setError('Failed to restart speech recognition. Please try stopping and starting the conversation again.');
@@ -299,7 +296,7 @@ const VoiceAIChat: React.FC = () => {
     } else {
       setError('Speech recognition not supported in this browser. Please use Chrome, Edge, or Safari.');
     }
-  }, [isRecording, isConnected, handleUserSpeech]);
+  }, [isRecording, isConnected, isAISpeaking, handleUserSpeech]);
 
   const speakText = async (text: string) => {
     if ('speechSynthesis' in window) {
@@ -320,6 +317,76 @@ const VoiceAIChat: React.FC = () => {
       if (femaleVoice) {
         utterance.voice = femaleVoice;
       }
+
+      speechSynthesis.speak(utterance);
+    }
+  };
+
+  const speakTextWithPause = async (text: string) => {
+    if ('speechSynthesis' in window) {
+      console.log('AI starting to speak - pausing speech recognition');
+      setIsAISpeaking(true);
+      
+      // Pause speech recognition while AI is speaking
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {
+          console.log('Speech recognition already stopped');
+        }
+      }
+
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 0.9;
+      utterance.pitch = 1;
+      utterance.volume = 0.8;
+      
+      // Use a pleasant voice if available
+      const voices = speechSynthesis.getVoices();
+      const femaleVoice = voices.find(voice => 
+        voice.name.includes('Female') || 
+        voice.name.includes('Samantha') ||
+        voice.name.includes('Karen') ||
+        voice.name.includes('Moira')
+      );
+      
+      if (femaleVoice) {
+        utterance.voice = femaleVoice;
+      }
+
+      // Handle speech end event
+      utterance.onend = () => {
+        console.log('AI finished speaking - resuming speech recognition after delay');
+        setIsAISpeaking(false);
+        
+        // Wait 2 seconds after AI finishes speaking before resuming speech recognition
+        setTimeout(() => {
+          if (isRecording && isConnected && recognitionRef.current) {
+            try {
+              recognitionRef.current.start();
+              console.log('Speech recognition resumed');
+            } catch (e) {
+              console.error('Error resuming speech recognition:', e);
+            }
+          }
+        }, 2000); // 2 second delay as requested
+      };
+
+      utterance.onerror = () => {
+        console.log('TTS error - resuming speech recognition');
+        setIsAISpeaking(false);
+        
+        // Resume speech recognition even if TTS fails
+        setTimeout(() => {
+          if (isRecording && isConnected && recognitionRef.current) {
+            try {
+              recognitionRef.current.start();
+            } catch (e) {
+              console.error('Error resuming speech recognition after TTS error:', e);
+            }
+          }
+        }, 1000);
+      };
 
       speechSynthesis.speak(utterance);
     }
@@ -466,6 +533,13 @@ const VoiceAIChat: React.FC = () => {
           <div className="processing-indicator">
             <span className="processing-spinner"></span>
             AI is thinking...
+          </div>
+        )}
+        
+        {isAISpeaking && (
+          <div className="speaking-indicator">
+            <span className="speaking-animation">🔊</span>
+            AI is speaking... (microphone paused)
           </div>
         )}
       </div>
