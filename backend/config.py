@@ -11,8 +11,8 @@ class Config:
     LIVEKIT_API_KEY: str = os.getenv("LIVEKIT_API_KEY", "")
     LIVEKIT_API_SECRET: str = os.getenv("LIVEKIT_API_SECRET", "")
     
-    # System prompt for the AI assistant
-    SYSTEM_PROMPT: str = "You are a friendly travel assistant. Help users plan their trips, suggest destinations, provide travel tips, and answer questions about travel. Keep your responses conversational and helpful, as if you're speaking to a friend."
+    # System prompt is now provided by user initialization
+    SYSTEM_PROMPT: str = "You are a helpful AI assistant. Respond naturally and conversationally based on the user's initialization message."
     
     @classmethod
     def validate_config(cls):

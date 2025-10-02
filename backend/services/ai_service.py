@@ -18,12 +18,27 @@ class AIService:
     async def generate_response(self, user_input: str, conversation_history: List[Dict[str, Any]]) -> str:
         """Generate AI response using OpenAI GPT"""
         try:
-            # Prepare messages for OpenAI API
-            messages = [{"role": "system", "content": self.system_prompt}]
+            # Use the first user message as the system prompt (initialization)
+            # If there's conversation history, the first message should be the initialization
+            if conversation_history and len(conversation_history) > 0:
+                first_message = conversation_history[0]
+                if first_message["role"] == "user":
+                    # Use the first user message as system prompt
+                    system_content = f"You are an AI assistant. {first_message['content']} Respond naturally and conversationally based on this role."
+                    messages = [{"role": "system", "content": system_content}]
+                    
+                    # Add the rest of the conversation history (skip the first initialization message)
+                    recent_history = conversation_history[1:-1] if len(conversation_history) > 21 else conversation_history[1:]
+                else:
+                    # Fallback to default system prompt
+                    messages = [{"role": "system", "content": self.system_prompt}]
+                    recent_history = conversation_history[-20:] if len(conversation_history) > 20 else conversation_history
+            else:
+                # No conversation history, use default system prompt
+                messages = [{"role": "system", "content": self.system_prompt}]
+                recent_history = []
             
-            # Add conversation history (limit to last 10 exchanges to manage token usage)
-            recent_history = conversation_history[-20:] if len(conversation_history) > 20 else conversation_history
-            
+            # Add conversation history
             for entry in recent_history:
                 if entry["role"] in ["user", "assistant"]:
                     messages.append({
