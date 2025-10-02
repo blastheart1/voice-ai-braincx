@@ -284,6 +284,60 @@ async def text_to_speech_endpoint(request: TTSRequest):
         logger.error(f"Error in TTS endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/tts/stream")
+async def streaming_text_to_speech_endpoint(request: TTSRequest):
+    """Convert text to speech using streaming OpenAI TTS"""
+    from fastapi.responses import StreamingResponse
+    import json
+    import base64
+    
+    async def generate_audio_stream():
+        try:
+            logger.info(f"🌊 Streaming TTS request: text_length={len(request.text)}, voice={request.voice}")
+            
+            async for chunk_data in ai_service.text_to_speech_streaming(request.text, request.voice):
+                # Convert audio data to base64 for JSON transmission
+                audio_b64 = base64.b64encode(chunk_data['audio_data']).decode('utf-8')
+                
+                response_data = {
+                    'chunk_index': chunk_data['chunk_index'],
+                    'total_chunks': chunk_data['total_chunks'],
+                    'audio_data': audio_b64,
+                    'text': chunk_data['text'],
+                    'is_final': chunk_data['is_final']
+                }
+                
+                # Safety check: Monitor JSON payload size
+                json_payload = json.dumps(response_data)
+                payload_size = len(json_payload)
+                
+                if payload_size > 20000:  # 20KB warning threshold
+                    logger.warning(f"⚠️ Large JSON payload: {payload_size} bytes for chunk {chunk_data['chunk_index'] + 1}")
+                
+                # Send as JSON lines (JSONL) format
+                yield f"data: {json_payload}\n\n"
+                
+                logger.info(f"📤 Sent chunk {chunk_data['chunk_index'] + 1}/{chunk_data['total_chunks']} ({payload_size} bytes)")
+            
+            logger.info("🎉 Streaming TTS completed")
+            
+        except Exception as e:
+            logger.error(f"Streaming TTS error: {str(e)}")
+            error_response = {
+                'error': str(e),
+                'is_final': True
+            }
+            yield f"data: {json.dumps(error_response)}\n\n"
+    
+    return StreamingResponse(
+        generate_audio_stream(),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

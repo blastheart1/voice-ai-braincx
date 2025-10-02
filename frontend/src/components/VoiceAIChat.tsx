@@ -89,6 +89,13 @@ const VoiceAIChat: React.FC = () => {
   const [isInitialized, setIsInitialized] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [transcriptLog, setTranscriptLog] = useState<string[]>([]);
+  
+  // Enhanced loading states
+  const [loadingStage, setLoadingStage] = useState<string>('');
+  const [processingStartTime, setProcessingStartTime] = useState<number>(0);
+  
+  // Speech processing delay to prevent double triggers
+  const speechDelayRef = useRef<NodeJS.Timeout | null>(null);
 
   const roomRef = useRef<Room | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -124,6 +131,16 @@ const VoiceAIChat: React.FC = () => {
       }
     };
   }, [isConnected]);
+
+  // Cleanup speech delay on unmount
+  useEffect(() => {
+    return () => {
+      if (speechDelayRef.current) {
+        clearTimeout(speechDelayRef.current);
+        console.log('⏰ Cleaned up speech delay on unmount');
+      }
+    };
+  }, []);
 
   const createSession = async (): Promise<SessionData> => {
     const response = await fetch('http://localhost:8000/api/session/create', {
@@ -217,6 +234,8 @@ const VoiceAIChat: React.FC = () => {
         setConversation(prev => [...prev, userEntry]);
         setCurrentTranscript('');
         setIsProcessing(true);
+        setLoadingStage('Analyzing your message...');
+        setProcessingStartTime(Date.now());
         
       } else if (data.type === 'ai_response') {
         const aiResponse: ConversationEntry = {
@@ -227,12 +246,20 @@ const VoiceAIChat: React.FC = () => {
         
         setConversation(prev => [...prev, aiResponse]);
         setIsProcessing(false);
+        setLoadingStage('');
+        
+        // Log processing time for UX insights
+        if (processingStartTime > 0) {
+          const processingTime = Date.now() - processingStartTime;
+          console.log(`⏱️ AI response generated in ${processingTime}ms`);
+        }
         
         // Immediately pause microphone input when AI response is received
         setIsAISpeaking(true);
         
         setTimeout(() => {
-          speakTextWithPause(data.text);
+          setLoadingStage('Generating voice response...');
+        speakTextWithPause(data.text);
         }, 300);
         
       } else if (data.type === 'error') {
@@ -265,6 +292,8 @@ const VoiceAIChat: React.FC = () => {
       console.log('Initializing conversation with:', initializationPrompt);
       setError(null);
       setIsProcessing(true);
+      setLoadingStage('Setting up conversation...');
+      setProcessingStartTime(Date.now());
 
       const sessionData = await createSession();
       sessionRef.current = sessionData;
@@ -314,13 +343,13 @@ const VoiceAIChat: React.FC = () => {
     console.log('User speech detected:', transcript);
 
     setCurrentTranscript('');
-    setIsProcessing(true);
+      setIsProcessing(true);
 
-    wsRef.current.send(JSON.stringify({
-      type: 'audio_transcript',
-      text: transcript,
-      timestamp: new Date().toISOString()
-    }));
+        wsRef.current.send(JSON.stringify({
+          type: 'audio_transcript',
+          text: transcript,
+          timestamp: new Date().toISOString()
+        }));
   }, []);
 
   const startAudioMonitoring = useCallback((audioTrack: any) => {
@@ -342,14 +371,21 @@ const VoiceAIChat: React.FC = () => {
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       const recognition = new SpeechRecognition();
       
+      // Optimized speech recognition settings for better accuracy
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = 'en-US';
-      recognition.maxAlternatives = 1;
+      recognition.maxAlternatives = 1;  // Focus on best result only
       
+      // Enhanced WebKit-specific optimizations
       if ('webkitSpeechRecognition' in window) {
         recognition.webkitContinuous = true;
         recognition.webkitInterimResults = true;
+      }
+      
+      // Audio processing optimizations
+      if (recognition.audiostart) {
+        recognition.audiostart = () => console.log('[SPEECH] Audio input started');
       }
 
       recognition.onstart = () => {
@@ -368,11 +404,19 @@ const VoiceAIChat: React.FC = () => {
           return;
         }
 
-        let finalTranscript = '';
+        // Enhanced result processing for better accuracy
         let interimTranscript = '';
+        let finalTranscript = '';
 
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const transcript = event.results[i][0].transcript;
+          const confidence = event.results[i][0].confidence;
+          
+          // Log confidence for debugging (helps identify recognition quality)
+          if (event.results[i].isFinal && confidence) {
+            console.log(`[SPEECH] Final transcript confidence: ${confidence.toFixed(2)}`);
+          }
+          
           if (event.results[i].isFinal) {
             finalTranscript += transcript;
           } else {
@@ -398,7 +442,20 @@ const VoiceAIChat: React.FC = () => {
           }
           
           setTranscriptLog(prev => [...prev.slice(-4), finalTranscript]);
-          handleUserSpeech(finalTranscript);
+          
+          // Clear any existing delay timer to prevent double triggers
+          if (speechDelayRef.current) {
+            clearTimeout(speechDelayRef.current);
+            console.log('⏰ Cleared previous speech delay timer');
+          }
+          
+          // Add 2s delay before processing to prevent double triggers
+          console.log('⏰ Starting 2s delay before processing speech...');
+          speechDelayRef.current = setTimeout(() => {
+            console.log('⏰ Speech delay complete, processing:', finalTranscript);
+            handleUserSpeech(finalTranscript);
+            speechDelayRef.current = null;
+          }, 2000);
           setCurrentTranscript('');
         } else {
           setCurrentTranscript(interimTranscript);
@@ -483,7 +540,14 @@ const VoiceAIChat: React.FC = () => {
   }, [isRoomReady, isAISpeaking, startAudioMonitoring]);
 
   const speakTextWithPause = async (text: string) => {
-    console.log('AI starting to speak - speech recognition already paused');
+    console.log('🌊 AI starting to speak with STREAMING TTS - speech recognition already paused');
+    
+    // Clear any pending speech processing to prevent conflicts
+    if (speechDelayRef.current) {
+      clearTimeout(speechDelayRef.current);
+      speechDelayRef.current = null;
+      console.log('⏰ Cleared pending speech delay due to AI speaking');
+    }
     
     // Start synthesis tracking
     const synthesisId = synthesisTrackerRef.current.startSynthesis(text);
@@ -491,16 +555,317 @@ const VoiceAIChat: React.FC = () => {
     // Clear any current transcript when AI starts speaking
     setCurrentTranscript('');
     
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch (e) {
-        console.log('Speech recognition already stopped');
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {
+          console.log('Speech recognition already stopped');
+        }
       }
-    }
 
     try {
-      // Call OpenAI TTS endpoint
+      // Try streaming TTS first
+      await streamingTTS(text, synthesisId);
+    } catch (error) {
+      console.error('Streaming TTS failed, falling back to regular TTS:', error);
+      await fallbackTTS(text, synthesisId);
+    }
+  };
+
+  const streamingTTS = async (text: string, synthesisId: number) => {
+    console.log('🚀 Starting streaming TTS...');
+    setLoadingStage('Starting voice generation...');
+    
+    const response = await fetch('http://localhost:8000/api/tts/stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        text: text,
+        voice: 'nova'
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Streaming TTS request failed: ${response.statusText}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error('Failed to get response reader');
+    }
+
+    const decoder = new TextDecoder();
+    const audioQueue: HTMLAudioElement[] = [];
+    const chunkTexts: string[] = [];
+    let isStreamComplete = false;
+
+    // Process streaming response
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) {
+          console.log('🎉 Natural streaming response complete');
+          isStreamComplete = true;
+          break;
+        }
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.substring(6));
+              
+              if (data.error) {
+                throw new Error(data.error);
+              }
+              
+              console.log(`📦 Received natural chunk ${data.chunk_index + 1}/${data.total_chunks}: "${data.text.substring(0, 30)}..."`);
+              
+              // Store chunk text for smart timing
+              chunkTexts[data.chunk_index] = data.text;
+              
+              // Convert base64 audio to blob
+              const audioData = atob(data.audio_data);
+              const audioArray = new Uint8Array(audioData.length);
+              for (let i = 0; i < audioData.length; i++) {
+                audioArray[i] = audioData.charCodeAt(i);
+              }
+              const audioBlob = new Blob([audioArray], { type: 'audio/opus' });
+              const audioUrl = URL.createObjectURL(audioBlob);
+              
+              // Create optimized audio element
+              const audio = new Audio(audioUrl);
+              audio.preload = 'auto';
+              audio.volume = 0.85;
+              audio.playbackRate = 1.05;
+              
+              audioQueue.push(audio);
+              
+              // Start playing first chunk immediately, continue adding chunks as they arrive
+              if (data.chunk_index === 0) {
+                console.log('🎵 Starting natural playback of first chunk while receiving more...');
+                setLoadingStage('Natural voice streaming started...');
+                // Start playing immediately but continue adding chunks with smart timing
+                playStreamingAudio(audioQueue, synthesisId, data.total_chunks, chunkTexts);
+                
+                // Safety timeout - if streaming takes too long, force completion
+                setTimeout(() => {
+                  if (isAISpeaking) {
+                    console.log('⏰ Streaming timeout - forcing completion');
+                    setIsAISpeaking(false);
+                    setLoadingStage('');
+                    synthesisTrackerRef.current.completeSynthesis(synthesisId);
+                  }
+                }, 15000); // 15 second timeout
+              }
+              
+            } catch (parseError) {
+              console.error('Error parsing streaming response:', parseError);
+            }
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  };
+
+  // Smart timing function for natural speech pauses
+  const getTransitionDelay = (chunkText: string, chunkIndex: number, totalChunks: number) => {
+    // Final chunk - no delay needed
+    if (chunkIndex >= totalChunks - 1) {
+      return 0;
+    }
+    
+    const trimmedText = chunkText.trim();
+    
+    // Natural pause points based on punctuation
+    if (trimmedText.endsWith('.') || trimmedText.endsWith('!') || trimmedText.endsWith('?')) {
+      return 400; // Natural sentence pause
+    } else if (trimmedText.endsWith(',') || trimmedText.endsWith(';')) {
+      return 200; // Comma pause
+    } else if (trimmedText.match(/\b(and|but|or|however|therefore|meanwhile|also|because|since|while|although)\s*$/i)) {
+      return 150; // Conjunction pause
+    } else {
+      return 50;  // Minimal continuation pause
+    }
+  };
+
+  const playStreamingAudio = async (audioQueue: HTMLAudioElement[], synthesisId: number, totalChunks: number, chunkTexts: string[] = []) => {
+    console.log(`🌊 Starting NATURAL streaming audio playback - expecting ${totalChunks} total chunks`);
+    let currentIndex = 0;
+    let chunksCompleted = 0;
+    
+    const playNext = async () => {
+      // Wait for chunk to be available
+      while (currentIndex >= audioQueue.length && chunksCompleted < totalChunks) {
+        console.log(`⏳ Waiting for chunk ${currentIndex + 1}/${totalChunks} to arrive...`);
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      
+      if (currentIndex >= audioQueue.length) {
+        console.log('🎉 All natural streaming chunks completed - finishing playback');
+        setIsAISpeaking(false);
+        setLoadingStage('');
+        
+        setTimeout(() => {
+          console.log('[NATURAL-STREAMING-COMPLETE] Marking synthesis as complete');
+          synthesisTrackerRef.current.completeSynthesis(synthesisId);
+        }, 500);
+        return;
+      }
+      
+      const audio = audioQueue[currentIndex];
+      const chunkNum = currentIndex + 1;
+      const chunkText = chunkTexts[currentIndex] || '';
+      
+      try {
+        console.log(`🎵 Playing natural streaming chunk ${chunkNum}/${totalChunks}: "${chunkText.substring(0, 30)}..."`);
+        setLoadingStage(`Playing part ${chunkNum}/${totalChunks}...`);
+        
+        await new Promise<void>((resolve, reject) => {
+          audio.onended = () => {
+            console.log(`✅ Natural streaming chunk ${chunkNum} finished`);
+            URL.revokeObjectURL(audio.src);
+            chunksCompleted++;
+            currentIndex++;
+            
+            // Check if all chunks are done
+            if (chunksCompleted >= totalChunks) {
+              console.log('🎉 All natural streaming chunks completed');
+              setIsAISpeaking(false);
+              setLoadingStage('');
+              
+              setTimeout(() => {
+                console.log('[NATURAL-STREAMING-COMPLETE] Marking synthesis as complete');
+                synthesisTrackerRef.current.completeSynthesis(synthesisId);
+              }, 500);
+            } else {
+              // Calculate natural pause based on chunk content
+              const delay = getTransitionDelay(chunkText, currentIndex - 1, totalChunks);
+              console.log(`⏱️ Natural pause: ${delay}ms after "${chunkText.substring(0, 20)}..."`);
+              setTimeout(() => playNext(), delay);
+            }
+            resolve();
+          };
+          
+          audio.onerror = (e) => {
+            console.error(`❌ Streaming chunk ${chunkNum} error:`, e);
+            URL.revokeObjectURL(audio.src);
+            chunksCompleted++;
+            currentIndex++;
+            
+            // Even on error, check if we're done
+            if (chunksCompleted >= totalChunks) {
+              console.log('🎉 Streaming completed (with errors)');
+              setIsAISpeaking(false);
+              setLoadingStage('');
+              
+              setTimeout(() => {
+                console.log('[STREAMING-ERROR-COMPLETE] Marking synthesis as complete after error');
+                synthesisTrackerRef.current.completeSynthesis(synthesisId);
+              }, 500);
+            } else {
+              setTimeout(() => playNext(), 100);
+            }
+            resolve(); // Don't reject, continue playing
+          };
+          
+          audio.play().catch((playError) => {
+            console.error(`❌ Failed to play chunk ${chunkNum}:`, playError);
+            // Treat play failure same as audio error
+            audio.onerror?.(playError as any);
+          });
+        });
+        
+      } catch (error) {
+        console.error(`Error with streaming chunk ${chunkNum}:`, error);
+        chunksCompleted++;
+        currentIndex++;
+        
+        if (chunksCompleted >= totalChunks) {
+          setIsAISpeaking(false);
+          setLoadingStage('');
+          setTimeout(() => {
+            synthesisTrackerRef.current.completeSynthesis(synthesisId);
+          }, 500);
+        } else {
+          setTimeout(() => playNext(), 100);
+        }
+      }
+    };
+    
+    // Start playing the first chunk
+    playNext();
+  };
+
+  const playAudioQueue = async (audioQueue: HTMLAudioElement[], synthesisId: number) => {
+    console.log(`🎼 Playing streaming audio queue with ${audioQueue.length} chunks`);
+    let currentIndex = 0;
+    
+    const playNextChunk = async () => {
+      while (currentIndex < audioQueue.length) {
+        const audio = audioQueue[currentIndex];
+        const chunkNum = currentIndex + 1;
+        
+        try {
+          console.log(`▶️ Playing chunk ${chunkNum}/${audioQueue.length}`);
+          setLoadingStage(`Playing part ${chunkNum}/${audioQueue.length}...`);
+          
+          await new Promise<void>((resolve, reject) => {
+            audio.onended = () => {
+              console.log(`✅ Chunk ${chunkNum} finished`);
+              URL.revokeObjectURL(audio.src);
+              resolve();
+            };
+            
+            audio.onerror = (e) => {
+              console.error(`❌ Chunk ${chunkNum} error:`, e);
+              URL.revokeObjectURL(audio.src);
+              reject(e);
+            };
+            
+            audio.play().catch(reject);
+          });
+          
+          currentIndex++;
+          
+          // Add small gap between chunks for natural flow
+          if (currentIndex < audioQueue.length) {
+            await new Promise(resolve => setTimeout(resolve, 200));
+          }
+          
+        } catch (error) {
+          console.error(`Error playing chunk ${chunkNum}:`, error);
+          currentIndex++;
+        }
+      }
+      
+      console.log('🎉 All streaming audio chunks played successfully');
+      setIsAISpeaking(false);
+      setLoadingStage('');
+      
+      setTimeout(() => {
+        console.log('[STREAMING-TTS-COMPLETE] Marking synthesis as complete');
+        synthesisTrackerRef.current.completeSynthesis(synthesisId);
+      }, 500);
+    };
+    
+    // Start playing immediately
+    playNextChunk();
+  };
+
+  const fallbackTTS = async (text: string, synthesisId: number) => {
+    console.log('🔄 Using fallback TTS...');
+    setLoadingStage('Generating voice (fallback)...');
+
+    try {
+      // Call regular OpenAI TTS API
       const response = await fetch('http://localhost:8000/api/tts', {
         method: 'POST',
         headers: {
@@ -508,91 +873,72 @@ const VoiceAIChat: React.FC = () => {
         },
         body: JSON.stringify({
           text: text,
-          voice: 'nova' // nova sounds more natural and feminine
-        })
+          voice: 'nova'
+        }),
       });
 
       if (!response.ok) {
         throw new Error(`TTS request failed: ${response.statusText}`);
       }
 
-      // Get audio data as blob
       const audioBlob = await response.blob();
       const audioUrl = URL.createObjectURL(audioBlob);
       
-      // Create HTML5 Audio element (replaces speechSynthesis)
       const audio = new Audio(audioUrl);
-      audio.volume = 0.8;
+      audio.preload = 'auto';
+      audio.volume = 0.85;
+      audio.playbackRate = 1.05;
+      audio.crossOrigin = 'anonymous';
 
-      // Set up synthesis completion tracking
       audio.onended = () => {
-        console.log('[AUDIO-END] OpenAI TTS audio ended');
-        
-        // Clean up the blob URL
+        console.log('[FALLBACK-TTS-END] Fallback TTS audio ended');
         URL.revokeObjectURL(audioUrl);
-        
-        // Signal synthesis completion (no automatic restart)
         setIsAISpeaking(false);
+        setLoadingStage('');
         
         setTimeout(() => {
-          console.log('[SYNTHESIS-COMPLETE] Marking synthesis as complete');
           synthesisTrackerRef.current.completeSynthesis(synthesisId);
-        }, 700); // Same 700ms delay for safety
+        }, 500);
       };
 
       audio.onerror = (event) => {
-        console.error('[AUDIO-ERROR] OpenAI TTS audio error:', event);
-        setIsAISpeaking(false);
-        
-        // Clean up the blob URL
+        console.error('[FALLBACK-TTS-ERROR] Fallback TTS error:', event);
         URL.revokeObjectURL(audioUrl);
+        setIsAISpeaking(false);
+        setLoadingStage('');
         
-        // Signal synthesis completion even on error
         setTimeout(() => {
-          console.log('[SYNTHESIS-ERROR-COMPLETE] Marking synthesis as complete after error');
           synthesisTrackerRef.current.completeSynthesis(synthesisId);
         }, 1000);
       };
 
-      // Start playing the audio
       await audio.play();
-      console.log('OpenAI TTS audio started playing');
+      console.log('Fallback TTS audio started playing');
 
     } catch (error) {
-      console.error('Error with OpenAI TTS:', error);
+      console.error('Fallback TTS also failed, using browser TTS:', error);
       
-      // Fallback to browser TTS if OpenAI fails
-      console.log('Falling back to browser TTS...');
+      // Final fallback to browser TTS
       if ('speechSynthesis' in window) {
-        // Keep isAISpeaking true during browser TTS fallback
         const utterance = new SpeechSynthesisUtterance(text);
-        utterance.rate = 0.9;
-        utterance.pitch = 1;
+        utterance.rate = 1.1;
+        utterance.pitch = 1.0;
         utterance.volume = 0.8;
-        
+
         utterance.onend = () => {
-          console.log('[BROWSER-TTS-END] Browser TTS fallback ended');
           setIsAISpeaking(false);
+          setLoadingStage('');
           setTimeout(() => {
-            console.log('[BROWSER-TTS-COMPLETE] Marking browser TTS synthesis as complete');
             synthesisTrackerRef.current.completeSynthesis(synthesisId);
-          }, 700);
-        };
-        
-        utterance.onerror = (event) => {
-          console.error('[BROWSER-TTS-ERROR] Browser TTS fallback error:', event);
-          setIsAISpeaking(false);
-          setTimeout(() => {
-            console.log('[BROWSER-TTS-ERROR-COMPLETE] Marking browser TTS synthesis as complete after error');
-            synthesisTrackerRef.current.completeSynthesis(synthesisId);
-          }, 1000);
-        };
-        
-        speechSynthesis.speak(utterance);
+          }, 500);
+      };
+
+      speechSynthesis.speak(utterance);
+        console.log('Browser TTS started as final fallback');
       } else {
-        // No TTS available, just reset the state
-        console.error('No TTS available (neither OpenAI nor browser TTS)');
         setIsAISpeaking(false);
+        setLoadingStage('');
+        synthesisTrackerRef.current.completeSynthesis(synthesisId);
       }
     }
   };
@@ -712,7 +1058,7 @@ const VoiceAIChat: React.FC = () => {
     clearConversation();
   };
 
-    return (
+  return (
       <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-gray-100 dark:from-gray-900 dark:via-gray-950 dark:to-black">
         <AnimatePresence mode="wait">
           {!isInitialized ? (
@@ -751,10 +1097,10 @@ const VoiceAIChat: React.FC = () => {
                       <span className="font-medium">Assistant Instructions</span>
                     </div>
                     
-                    <textarea
-                      value={initializationPrompt}
-                      onChange={(e) => setInitializationPrompt(e.target.value)}
-                      placeholder="e.g., You are a friendly travel assistant. Help users plan their trips, suggest destinations, provide travel tips, and answer questions about travel. Keep your responses conversational and helpful."
+            <textarea
+              value={initializationPrompt}
+              onChange={(e) => setInitializationPrompt(e.target.value)}
+              placeholder="e.g., You are a friendly travel assistant. Help users plan their trips, suggest destinations, provide travel tips, and answer questions about travel. Keep your responses conversational and helpful."
                       rows={6}
                       className="w-full px-5 py-4 bg-gray-50/50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 rounded-2xl text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500/50 transition-all duration-200 resize-none font-light leading-relaxed"
                     />
@@ -762,8 +1108,8 @@ const VoiceAIChat: React.FC = () => {
                     <motion.button
                       whileHover={{ scale: 1.02, y: -1 }}
                       whileTap={{ scale: 0.98 }}
-                      onClick={handleInitialization}
-                      disabled={!initializationPrompt.trim() || isProcessing}
+              onClick={handleInitialization}
+              disabled={!initializationPrompt.trim() || isProcessing}
                       className="w-full py-4 px-6 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white font-medium rounded-2xl shadow-lg shadow-blue-500/25 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none flex items-center justify-center gap-3 transition-all duration-200"
                     >
                       {isProcessing ? (
@@ -778,9 +1124,9 @@ const VoiceAIChat: React.FC = () => {
                         </>
                       )}
                     </motion.button>
-                  </div>
+          </div>
                 </motion.div>
-              </div>
+        </div>
             </motion.div>
           ) : (
             <motion.div
@@ -821,7 +1167,7 @@ const VoiceAIChat: React.FC = () => {
                     <motion.button
                       whileHover={{ scale: 1.05, y: -1 }}
                       whileTap={{ scale: 0.95 }}
-                      onClick={clearConversation}
+            onClick={clearConversation}
                       disabled={!isConnected}
                       className="px-4 py-2.5 rounded-xl font-medium flex items-center gap-2 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-gray-900/5"
                     >
@@ -839,8 +1185,8 @@ const VoiceAIChat: React.FC = () => {
                       <LogOut className="w-4 h-4" />
                       <span>End</span>
                     </motion.button>
-                  </div>
-                </div>
+        </div>
+          </div>
               </motion.header>
 
               {/* Status & Content */}
@@ -869,12 +1215,57 @@ const VoiceAIChat: React.FC = () => {
                       {isAISpeaking ? (
                         <>
                           <Volume2 className="w-6 h-6 text-purple-600 dark:text-purple-400 animate-pulse" />
-                          <span className="text-purple-900 dark:text-purple-100 font-medium text-lg">AI is speaking... (microphone paused)</span>
+                          <div className="flex items-center gap-4">
+                            <span className="text-purple-900 dark:text-purple-100 font-medium text-lg">AI is speaking... (microphone paused)</span>
+                            <button
+                              onClick={() => {
+                                console.log('🔧 Manual recovery - forcing speech completion');
+                                setIsAISpeaking(false);
+                                setLoadingStage('');
+                                synthesisTrackerRef.current.reset();
+                              }}
+                              className="px-3 py-1 text-xs bg-purple-200 hover:bg-purple-300 text-purple-800 rounded-lg transition-colors"
+                            >
+                              Skip
+                            </button>
+                          </div>
                         </>
                       ) : isProcessing ? (
                         <>
-                          <Loader2 className="w-6 h-6 text-amber-600 dark:text-amber-400 animate-spin" />
-                          <span className="text-amber-900 dark:text-amber-100 font-medium text-lg">AI is thinking...</span>
+                          <div className="flex items-center gap-3">
+                            <Loader2 className="w-6 h-6 text-amber-600 dark:text-amber-400 animate-spin" />
+                            <div className="flex flex-col">
+                              <span className="text-amber-900 dark:text-amber-100 font-medium text-lg">
+                                {loadingStage || 'AI is thinking...'}
+                              </span>
+                              {processingStartTime > 0 && (
+                                <span className="text-amber-700 dark:text-amber-300 text-sm opacity-75">
+                                  {Math.floor((Date.now() - processingStartTime) / 100) / 10}s
+                                </span>
+                              )}
+          </div>
+          </div>
+                          {/* Processing progress indicator */}
+                          <div className="ml-auto">
+                            <div className="flex gap-1">
+                              {[0, 1, 2].map((i) => (
+                                <motion.div
+                                  key={i}
+                                  className="w-2 h-2 bg-amber-500 rounded-full"
+                                  animate={{
+                                    scale: [1, 1.2, 1],
+                                    opacity: [0.3, 1, 0.3],
+                                  }}
+                                  transition={{
+                                    duration: 1.2,
+                                    repeat: Infinity,
+                                    delay: i * 0.2,
+                                    ease: "easeInOut",
+                                  }}
+                                />
+                              ))}
+      </div>
+        </div>
                         </>
                       ) : !isRoomReady && isConnected ? (
                         <>
@@ -897,7 +1288,7 @@ const VoiceAIChat: React.FC = () => {
                           <span className="text-green-900 dark:text-green-100 font-medium text-lg">Listening... speak naturally</span>
                         </>
                       )}
-                    </div>
+          </div>
                   </motion.div>
                 </AnimatePresence>
 
@@ -915,7 +1306,7 @@ const VoiceAIChat: React.FC = () => {
 
                 {/* Error Message */}
                 <AnimatePresence>
-                  {error && (
+      {error && (
                     <motion.div
                       initial={{ opacity: 0, y: -10, scale: 0.95 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -944,7 +1335,7 @@ const VoiceAIChat: React.FC = () => {
                   
                   <div className="h-[calc(100vh-400px)] overflow-y-auto p-6 space-y-6">
                     <AnimatePresence initial={false}>
-                      {conversation.length === 0 ? (
+          {conversation.length === 0 ? (
                         <motion.div
                           initial={{ opacity: 0, scale: 0.9 }}
                           animate={{ opacity: 1, scale: 1 }}
@@ -952,13 +1343,13 @@ const VoiceAIChat: React.FC = () => {
                         >
                           <div className="w-20 h-20 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
                             <MessageSquare className="w-10 h-10 text-gray-400 dark:text-gray-600" />
-                          </div>
+            </div>
                           <p className="text-gray-500 dark:text-gray-400 font-light text-lg">
                             Your conversation will appear here.<br />Speak naturally to get started!
                           </p>
                         </motion.div>
-                      ) : (
-                        conversation.map((entry, index) => (
+          ) : (
+            conversation.map((entry, index) => (
                           <motion.div
                             key={index}
                             initial={{ opacity: 0, y: 20, scale: 0.95 }}
@@ -981,9 +1372,9 @@ const VoiceAIChat: React.FC = () => {
                                 <span className={`text-xs font-semibold ${
                                   entry.role === 'user' ? 'text-blue-100' : 'text-gray-600 dark:text-gray-400'
                                 }`}>
-                                  {entry.role === 'user' ? '👤 You' : '🤖 AI Assistant'}
-                                </span>
-                                {entry.timestamp && (
+                    {entry.role === 'user' ? '👤 You' : '🤖 AI Assistant'}
+                  </span>
+                  {entry.timestamp && (
                                   <span className={`text-xs ${
                                     entry.role === 'user' ? 'text-blue-200' : 'text-gray-500 dark:text-gray-500'
                                   }`}>
@@ -991,26 +1382,26 @@ const VoiceAIChat: React.FC = () => {
                                       hour: '2-digit', 
                                       minute: '2-digit' 
                                     })}
-                                  </span>
-                                )}
-                              </div>
+                    </span>
+                  )}
+                </div>
                               <p className="leading-relaxed whitespace-pre-wrap font-light">
-                                {entry.content}
+                  {entry.content}
                               </p>
-                            </div>
+                </div>
                           </motion.div>
-                        ))
-                      )}
+            ))
+          )}
                     </AnimatePresence>
                     <div ref={conversationEndRef} />
-                  </div>
+        </div>
                 </motion.div>
-              </div>
+      </div>
             </motion.div>
           )}
         </AnimatePresence>
-      </div>
-    );
+    </div>
+  );
 };
 
 export default VoiceAIChat;
