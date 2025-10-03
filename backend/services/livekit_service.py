@@ -56,7 +56,7 @@ class LiveKitService:
             room_info = await livekit_api.room.create_room(
                 api.CreateRoomRequest(name=room_name)
             )
-            logger.info(f"Created room: {room_info.name}")
+            logger.info(f"🏠 Created room: {room_info.name} at {asyncio.get_event_loop().time()}")
         except Exception as e:
             # Room might already exist, which is fine
             if "already exists" not in str(e).lower():
@@ -70,7 +70,7 @@ class LiveKitService:
             await livekit_api.room.delete_room(
                 api.DeleteRoomRequest(room=room_name)
             )
-            logger.info(f"Ended room: {room_name}")
+            logger.info(f"🏠 Ended room: {room_name} at {asyncio.get_event_loop().time()}")
         except Exception as e:
             logger.error(f"Error ending room {room_name}: {str(e)}")
             # Don't raise - room cleanup is not critical

@@ -2,8 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Room, RoomEvent, Track, RemoteTrack, RemoteParticipant } from 'livekit-client';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Mic, MicOff, Trash2, LogOut, Send, Loader2, Volume2, MessageSquare, Clock } from 'lucide-react';
-import { Alert, AlertDescription } from './ui/alert';
-import { Card, CardContent } from './ui/card';
+// Removed unused UI components - using inline styles for production build
 
 // TypeScript declarations for Web APIs
 declare global {
@@ -36,9 +35,16 @@ class SynthesisTracker {
     this.synthesisId = null;
     this.isAudioPlaying = false;
     this.completionCallbacks = [];
+    console.log('🔧 [SYNTHESIS-TRACKER] Initialized in idle state');
   }
 
   startSynthesis(text: string): number {
+    // Prevent multiple synthesis operations
+    if (this.isAudioPlaying && this.synthesisId !== null) {
+      console.log(`⚠️ [SYNTHESIS-TRACKER] Synthesis already in progress (${this.synthesisId}), completing previous first`);
+      this.completeSynthesis(this.synthesisId);
+    }
+    
     this.synthesisId = Date.now() + Math.random();
     this.isAudioPlaying = true;
     console.log(`[SYNTHESIS-${this.synthesisId}] Started: "${text.substring(0, 30)}..."`);
@@ -46,6 +52,12 @@ class SynthesisTracker {
   }
 
   completeSynthesis(synthesisId: number): void {
+    // Defensive check: Ensure synthesisId is valid
+    if (synthesisId === null || synthesisId === undefined) {
+      console.log('⚠️ [SYNTHESIS-TRACKER] Invalid synthesis ID, skipping completion:', synthesisId);
+      return;
+    }
+
     if (this.synthesisId === synthesisId) {
       this.isAudioPlaying = false;
       console.log(`[SYNTHESIS-${synthesisId}] COMPLETED - Safe to restart listening`);
@@ -54,13 +66,18 @@ class SynthesisTracker {
       this.completionCallbacks.forEach(callback => callback(synthesisId));
       this.completionCallbacks = [];
       this.synthesisId = null;
+    } else {
+      console.log(`⚠️ [SYNTHESIS-TRACKER] ID mismatch - expected ${this.synthesisId}, got ${synthesisId}`);
     }
   }
 
   onSynthesisComplete(callback: (synthesisId: number | null) => void): void {
-    if (!this.isAudioPlaying) {
-      callback(null); // Already complete
+    // Only add callback if we're actually in a synthesis state
+    if (this.synthesisId !== null && this.isAudioPlaying) {
+      this.completionCallbacks.push(callback);
     } else {
+      // Don't call callback if no synthesis is active - wait for actual synthesis
+      console.log('⚠️ [SYNTHESIS-TRACKER] No active synthesis, deferring completion callback');
       this.completionCallbacks.push(callback);
     }
   }
@@ -73,6 +90,12 @@ class SynthesisTracker {
     this.synthesisId = null;
     this.isAudioPlaying = false;
     this.completionCallbacks = [];
+    console.log('🔧 [SYNTHESIS-TRACKER] Reset to idle state');
+  }
+
+  clearCallbacks(): void {
+    this.completionCallbacks = [];
+    console.log('🔧 [SYNTHESIS-TRACKER] Cleared all completion callbacks');
   }
 }
 
@@ -88,7 +111,7 @@ const VoiceAIChat: React.FC = () => {
   const [initializationPrompt, setInitializationPrompt] = useState('');
   const [isInitialized, setIsInitialized] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
-  const [transcriptLog, setTranscriptLog] = useState<string[]>([]);
+  // Removed unused transcriptLog state
   
   // Enhanced loading states
   const [loadingStage, setLoadingStage] = useState<string>('');
@@ -100,11 +123,15 @@ const VoiceAIChat: React.FC = () => {
   const roomRef = useRef<Room | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const sessionRef = useRef<SessionData | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
+  // Removed unused media recorder refs
   const recognitionRef = useRef<any>(null);
   const conversationEndRef = useRef<HTMLDivElement>(null);
-  const synthesisTrackerRef = useRef<SynthesisTracker>(new SynthesisTracker());
+  const synthesisTrackerRef = useRef<SynthesisTracker | null>(null);
+  
+  // Initialize synthesis tracker only once
+  if (synthesisTrackerRef.current === null) {
+    synthesisTrackerRef.current = new SynthesisTracker();
+  }
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -132,18 +159,46 @@ const VoiceAIChat: React.FC = () => {
     };
   }, [isConnected]);
 
-  // Cleanup speech delay on unmount
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
+      // Cleanup any pending operations
       if (speechDelayRef.current) {
         clearTimeout(speechDelayRef.current);
-        console.log('⏰ Cleaned up speech delay on unmount');
+      }
+      
+      // Clear synthesis tracker callbacks to prevent memory leaks
+      if (synthesisTrackerRef.current) {
+        synthesisTrackerRef.current.clearCallbacks();
+      }
+      
+      // Cleanup session on component unmount
+      if (sessionRef.current) {
+        console.log('🧹 Component unmounting - cleaning up session');
+        stopConversation();
       }
     };
   }, []);
 
+  // Cleanup on page unload/refresh
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (sessionRef.current) {
+        console.log('🧹 Page unloading - cleaning up session');
+        // Send cleanup request to backend
+        fetch(`${process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000'}/api/session/${sessionRef.current.session_id}`, {
+          method: 'DELETE',
+        }).catch(err => console.log('Cleanup request failed:', err));
+      }
+    };
+    
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, []);
+
   const createSession = async (): Promise<SessionData> => {
-    const response = await fetch('http://localhost:8000/api/session/create', {
+    const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
+    const response = await fetch(`${backendUrl}/api/session/create`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -213,7 +268,8 @@ const VoiceAIChat: React.FC = () => {
   };
 
   const connectWebSocket = (sessionId: string) => {
-    const ws = new WebSocket(`ws://localhost:8000/ws/${sessionId}`);
+    const wsUrl = process.env.REACT_APP_WS_URL || 'ws://localhost:8000';
+    const ws = new WebSocket(`${wsUrl}/ws/${sessionId}`);
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -225,13 +281,8 @@ const VoiceAIChat: React.FC = () => {
       
       if (data.type === 'transcript') {
         console.log('Backend confirmed transcript:', data.text);
-        const userEntry: ConversationEntry = {
-          role: 'user',
-          content: data.text,
-          timestamp: new Date().toISOString()
-        };
-        
-        setConversation(prev => [...prev, userEntry]);
+        // User message already added to conversation in handleUserSpeech
+        // Just update the processing state - don't block microphone yet
         setCurrentTranscript('');
         setIsProcessing(true);
         setLoadingStage('Analyzing your message...');
@@ -256,6 +307,20 @@ const VoiceAIChat: React.FC = () => {
         
         // Immediately pause microphone input when AI response is received
         setIsAISpeaking(true);
+        
+        // Stop speech recognition immediately when AI starts speaking
+        if (recognitionRef.current) {
+          console.log('🛑 Stopping speech recognition - AI is speaking');
+          recognitionRef.current.stop();
+          recognitionRef.current = null;
+        }
+        
+        // Additional safety: Clear any pending speech processing
+        if (speechDelayRef.current) {
+          clearTimeout(speechDelayRef.current);
+          speechDelayRef.current = null;
+          console.log('⏰ Cleared pending speech delay - AI is speaking');
+        }
         
         setTimeout(() => {
           setLoadingStage('Generating voice response...');
@@ -295,40 +360,13 @@ const VoiceAIChat: React.FC = () => {
       setLoadingStage('Setting up conversation...');
       setProcessingStartTime(Date.now());
 
-      const sessionData = await createSession();
-      sessionRef.current = sessionData;
-
-      connectWebSocket(sessionData.session_id);
-
+      // Store the initialization prompt for later use
+      // Session will be created in startConversation() to avoid double creation
       const initPrompt = initializationPrompt;
 
-      setTimeout(() => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({
-            type: 'audio_transcript',
-            text: initPrompt,
-            timestamp: new Date().toISOString()
-          }));
+      // Mark as initialized and start the conversation flow
           setIsInitialized(true);
-          setTimeout(() => startConversation(), 1000);
-        } else {
-          console.log('WebSocket not ready, retrying...');
-          setTimeout(() => {
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-              wsRef.current.send(JSON.stringify({
-                type: 'audio_transcript',
-                text: initPrompt,
-                timestamp: new Date().toISOString()
-              }));
-              setIsInitialized(true);
-              setTimeout(() => startConversation(), 1000);
-            } else {
-              setError('Failed to connect to server. Please try again.');
-              setIsProcessing(false);
-            }
-          }, 1000);
-        }
-      }, 500);
+      setTimeout(() => startConversation(initPrompt), 1000);
 
     } catch (error) {
       console.error('Error during initialization:', error);
@@ -340,10 +378,34 @@ const VoiceAIChat: React.FC = () => {
   const handleUserSpeech = useCallback(async (transcript: string) => {
     if (!transcript.trim() || !wsRef.current) return;
 
+    // AGGRESSIVE SAFETY CHECK: Block if AI is speaking
+    if (isAISpeaking) {
+      console.log('🚫 BLOCKING user speech - AI is speaking:', transcript);
+      return;
+    }
+
     console.log('User speech detected:', transcript);
 
+    // Stop speech recognition immediately when user speech is detected
+    if (recognitionRef.current) {
+      console.log('🛑 Stopping speech recognition - user speech detected');
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+    }
+
+    // Add user message to conversation immediately for instant feedback
+    const userEntry: ConversationEntry = {
+      role: 'user',
+      content: transcript,
+      timestamp: new Date().toISOString()
+    };
+    setConversation(prev => [...prev, userEntry]);
+
+    // Set processing state - speech recognition already stopped above
     setCurrentTranscript('');
       setIsProcessing(true);
+    setLoadingStage('Sending your message...');
+    setProcessingStartTime(Date.now());
 
         wsRef.current.send(JSON.stringify({
           type: 'audio_transcript',
@@ -358,6 +420,18 @@ const VoiceAIChat: React.FC = () => {
     // Check if room is ready before starting speech recognition
     if (!isRoomReady) {
       console.log('Room not ready yet, waiting for 3-second delay to complete');
+      return;
+    }
+    
+    // Check if AI is speaking (but allow processing to continue)
+    if (isAISpeaking) {
+      console.log('AI is speaking, skipping speech recognition start');
+      return;
+    }
+    
+    // Check if user is muted - don't start speech recognition
+    if (isMuted) {
+      console.log('User is muted, skipping speech recognition start');
       return;
     }
     
@@ -399,8 +473,15 @@ const VoiceAIChat: React.FC = () => {
           return;
         }
 
+        // AGGRESSIVE BLOCKING: Check isAISpeaking first and most importantly
         if (isAISpeaking) {
-          console.log('AI is speaking, ignoring user speech input');
+          console.log('🚫 AI is speaking, BLOCKING user speech input');
+          return;
+        }
+
+        // Block if we're already processing user input
+        if (isProcessing) {
+          console.log('Already processing user input, ignoring additional speech');
           return;
         }
 
@@ -441,21 +522,15 @@ const VoiceAIChat: React.FC = () => {
             return;
           }
           
-          setTranscriptLog(prev => [...prev.slice(-4), finalTranscript]);
+        // If AI is speaking, ignore this input (but allow during processing)
+        if (isAISpeaking) {
+          console.log('AI is speaking, ignoring user speech:', finalTranscript);
+          return;
+        }
           
-          // Clear any existing delay timer to prevent double triggers
-          if (speechDelayRef.current) {
-            clearTimeout(speechDelayRef.current);
-            console.log('⏰ Cleared previous speech delay timer');
-          }
-          
-          // Add 2s delay before processing to prevent double triggers
-          console.log('⏰ Starting 2s delay before processing speech...');
-          speechDelayRef.current = setTimeout(() => {
-            console.log('⏰ Speech delay complete, processing:', finalTranscript);
-            handleUserSpeech(finalTranscript);
-            speechDelayRef.current = null;
-          }, 2000);
+          // Process user speech immediately - no delay
+          console.log('Processing user speech immediately:', finalTranscript);
+          handleUserSpeech(finalTranscript);
           setCurrentTranscript('');
         } else {
           setCurrentTranscript(interimTranscript);
@@ -508,22 +583,28 @@ const VoiceAIChat: React.FC = () => {
 
   // Start audio monitoring when room becomes ready (only for initial setup)
   useEffect(() => {
-    if (isRoomReady && isRecording && isConnected && !isAISpeaking && !recognitionRef.current) {
+    if (isRoomReady && isRecording && isConnected && !isAISpeaking && !isMuted && !recognitionRef.current) {
       console.log('Room is ready, starting initial audio monitoring');
       startAudioMonitoring(null);
     }
-  }, [isRoomReady, isRecording, isConnected, isAISpeaking, startAudioMonitoring]);
+  }, [isRoomReady, isRecording, isConnected, isAISpeaking, isMuted, startAudioMonitoring]);
 
   // Centralized synthesis completion handler - ONLY place that restarts speech recognition
   useEffect(() => {
     const handleSynthesisComplete = (synthesisId: number | null) => {
+      // Add null check to prevent premature restarts
+      if (synthesisId === null || synthesisId === undefined) {
+        console.log('⚠️ [RESTART-TRIGGER] Invalid synthesis ID, skipping restart:', synthesisId);
+        return;
+      }
+      
       console.log(`[RESTART-TRIGGER] Synthesis ${synthesisId} confirmed complete`);
       
       // Enhanced safety checks with echo cancellation consideration
-      if (sessionRef.current && isRoomReady && !recognitionRef.current && !isAISpeaking) {
+      if (sessionRef.current && isRoomReady && !recognitionRef.current && !isAISpeaking && !isMuted) {
         setTimeout(() => {
           // Double-check conditions after safety delay
-          if (sessionRef.current && isRoomReady && !recognitionRef.current && !isAISpeaking) {
+          if (sessionRef.current && isRoomReady && !recognitionRef.current && !isAISpeaking && !isMuted) {
             console.log('[RESTART-AUTHORIZED] Starting speech recognition after synthesis completion');
             startAudioMonitoring(null);
           } else {
@@ -531,13 +612,15 @@ const VoiceAIChat: React.FC = () => {
           }
         }, 500); // Extra safety buffer for echo cancellation
       } else {
-        console.log('[RESTART-BLOCKED] Session/room not ready or recognition already active');
+        console.log('[RESTART-BLOCKED] Session/room not ready, recognition already active, or user is muted');
       }
     };
 
     // Register the completion handler
-    synthesisTrackerRef.current.onSynthesisComplete(handleSynthesisComplete);
-  }, [isRoomReady, isAISpeaking, startAudioMonitoring]);
+    if (synthesisTrackerRef.current) {
+      synthesisTrackerRef.current.onSynthesisComplete(handleSynthesisComplete);
+    }
+  }, [isRoomReady, isAISpeaking, isMuted, startAudioMonitoring]);
 
   const speakTextWithPause = async (text: string) => {
     console.log('🌊 AI starting to speak with STREAMING TTS - speech recognition already paused');
@@ -550,7 +633,13 @@ const VoiceAIChat: React.FC = () => {
     }
     
     // Start synthesis tracking
-    const synthesisId = synthesisTrackerRef.current.startSynthesis(text);
+    const synthesisId = synthesisTrackerRef.current?.startSynthesis(text);
+    
+    // Early return if synthesis tracker is not available
+    if (!synthesisId) {
+      console.error('⚠️ [SYNTHESIS] Synthesis tracker not available, cannot track synthesis');
+      return;
+    }
     
     // Clear any current transcript when AI starts speaking
     setCurrentTranscript('');
@@ -576,7 +665,8 @@ const VoiceAIChat: React.FC = () => {
     console.log('🚀 Starting streaming TTS...');
     setLoadingStage('Starting voice generation...');
     
-    const response = await fetch('http://localhost:8000/api/tts/stream', {
+    const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
+    const response = await fetch(`${backendUrl}/api/tts/stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -599,7 +689,7 @@ const VoiceAIChat: React.FC = () => {
     const decoder = new TextDecoder();
     const audioQueue: HTMLAudioElement[] = [];
     const chunkTexts: string[] = [];
-    let isStreamComplete = false;
+    // Removed unused isStreamComplete variable
 
     // Process streaming response
     try {
@@ -608,7 +698,7 @@ const VoiceAIChat: React.FC = () => {
         
         if (done) {
           console.log('🎉 Natural streaming response complete');
-          isStreamComplete = true;
+          // Stream complete
           break;
         }
 
@@ -659,7 +749,11 @@ const VoiceAIChat: React.FC = () => {
                     console.log('⏰ Streaming timeout - forcing completion');
                     setIsAISpeaking(false);
                     setLoadingStage('');
-                    synthesisTrackerRef.current.completeSynthesis(synthesisId);
+                    if (synthesisId !== null && synthesisId !== undefined && synthesisTrackerRef.current) {
+                      synthesisTrackerRef.current.completeSynthesis(synthesisId);
+          } else {
+                      console.log('⚠️ [STREAMING-TIMEOUT] Invalid synthesis ID or tracker, skipping completion:', synthesisId);
+                    }
                   }
                 }, 15000); // 15 second timeout
               }
@@ -691,7 +785,7 @@ const VoiceAIChat: React.FC = () => {
       return 200; // Comma pause
     } else if (trimmedText.match(/\b(and|but|or|however|therefore|meanwhile|also|because|since|while|although)\s*$/i)) {
       return 150; // Conjunction pause
-    } else {
+          } else {
       return 50;  // Minimal continuation pause
     }
   };
@@ -710,12 +804,16 @@ const VoiceAIChat: React.FC = () => {
       
       if (currentIndex >= audioQueue.length) {
         console.log('🎉 All natural streaming chunks completed - finishing playback');
-        setIsAISpeaking(false);
+            setIsAISpeaking(false);
         setLoadingStage('');
-        
-        setTimeout(() => {
+            
+            setTimeout(() => {
           console.log('[NATURAL-STREAMING-COMPLETE] Marking synthesis as complete');
-          synthesisTrackerRef.current.completeSynthesis(synthesisId);
+          if (synthesisId !== null && synthesisId !== undefined && synthesisTrackerRef.current) {
+            synthesisTrackerRef.current.completeSynthesis(synthesisId);
+          } else {
+            console.log('⚠️ [STREAMING] Invalid synthesis ID or tracker, skipping completion:', synthesisId);
+          }
         }, 500);
         return;
       }
@@ -743,9 +841,13 @@ const VoiceAIChat: React.FC = () => {
               
               setTimeout(() => {
                 console.log('[NATURAL-STREAMING-COMPLETE] Marking synthesis as complete');
-                synthesisTrackerRef.current.completeSynthesis(synthesisId);
+                if (synthesisId !== null && synthesisId !== undefined && synthesisTrackerRef.current) {
+                  synthesisTrackerRef.current.completeSynthesis(synthesisId);
+                } else {
+                  console.log('⚠️ [STREAMING] Invalid synthesis ID or tracker, skipping completion:', synthesisId);
+                }
               }, 500);
-            } else {
+              } else {
               // Calculate natural pause based on chunk content
               const delay = getTransitionDelay(chunkText, currentIndex - 1, totalChunks);
               console.log(`⏱️ Natural pause: ${delay}ms after "${chunkText.substring(0, 20)}..."`);
@@ -768,9 +870,13 @@ const VoiceAIChat: React.FC = () => {
               
               setTimeout(() => {
                 console.log('[STREAMING-ERROR-COMPLETE] Marking synthesis as complete after error');
-                synthesisTrackerRef.current.completeSynthesis(synthesisId);
+                if (synthesisId !== null && synthesisId !== undefined && synthesisTrackerRef.current) {
+                  synthesisTrackerRef.current.completeSynthesis(synthesisId);
+                } else {
+                  console.log('⚠️ [STREAMING-ERROR] Invalid synthesis ID or tracker, skipping completion:', synthesisId);
+                }
               }, 500);
-            } else {
+              } else {
               setTimeout(() => playNext(), 100);
             }
             resolve(); // Don't reject, continue playing
@@ -792,7 +898,11 @@ const VoiceAIChat: React.FC = () => {
           setIsAISpeaking(false);
           setLoadingStage('');
           setTimeout(() => {
-            synthesisTrackerRef.current.completeSynthesis(synthesisId);
+            if (synthesisId !== null && synthesisId !== undefined && synthesisTrackerRef.current) {
+              synthesisTrackerRef.current.completeSynthesis(synthesisId);
+            } else {
+              console.log('⚠️ [STREAMING] Invalid synthesis ID or tracker, skipping completion:', synthesisId);
+            }
           }, 500);
         } else {
           setTimeout(() => playNext(), 100);
@@ -804,61 +914,7 @@ const VoiceAIChat: React.FC = () => {
     playNext();
   };
 
-  const playAudioQueue = async (audioQueue: HTMLAudioElement[], synthesisId: number) => {
-    console.log(`🎼 Playing streaming audio queue with ${audioQueue.length} chunks`);
-    let currentIndex = 0;
-    
-    const playNextChunk = async () => {
-      while (currentIndex < audioQueue.length) {
-        const audio = audioQueue[currentIndex];
-        const chunkNum = currentIndex + 1;
-        
-        try {
-          console.log(`▶️ Playing chunk ${chunkNum}/${audioQueue.length}`);
-          setLoadingStage(`Playing part ${chunkNum}/${audioQueue.length}...`);
-          
-          await new Promise<void>((resolve, reject) => {
-            audio.onended = () => {
-              console.log(`✅ Chunk ${chunkNum} finished`);
-              URL.revokeObjectURL(audio.src);
-              resolve();
-            };
-            
-            audio.onerror = (e) => {
-              console.error(`❌ Chunk ${chunkNum} error:`, e);
-              URL.revokeObjectURL(audio.src);
-              reject(e);
-            };
-            
-            audio.play().catch(reject);
-          });
-          
-          currentIndex++;
-          
-          // Add small gap between chunks for natural flow
-          if (currentIndex < audioQueue.length) {
-            await new Promise(resolve => setTimeout(resolve, 200));
-          }
-          
-        } catch (error) {
-          console.error(`Error playing chunk ${chunkNum}:`, error);
-          currentIndex++;
-        }
-      }
-      
-      console.log('🎉 All streaming audio chunks played successfully');
-      setIsAISpeaking(false);
-      setLoadingStage('');
-      
-      setTimeout(() => {
-        console.log('[STREAMING-TTS-COMPLETE] Marking synthesis as complete');
-        synthesisTrackerRef.current.completeSynthesis(synthesisId);
-      }, 500);
-    };
-    
-    // Start playing immediately
-    playNextChunk();
-  };
+  // Removed unused playAudioQueue function - using playStreamingAudio instead
 
   const fallbackTTS = async (text: string, synthesisId: number) => {
     console.log('🔄 Using fallback TTS...');
@@ -866,7 +922,8 @@ const VoiceAIChat: React.FC = () => {
 
     try {
       // Call regular OpenAI TTS API
-      const response = await fetch('http://localhost:8000/api/tts', {
+      const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
+      const response = await fetch(`${backendUrl}/api/tts`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -897,7 +954,11 @@ const VoiceAIChat: React.FC = () => {
         setLoadingStage('');
         
         setTimeout(() => {
+        if (synthesisId !== null && synthesisId !== undefined && synthesisTrackerRef.current) {
           synthesisTrackerRef.current.completeSynthesis(synthesisId);
+        } else {
+          console.log('⚠️ [FALLBACK-TTS] Invalid synthesis ID or tracker, skipping completion:', synthesisId);
+        }
         }, 500);
       };
 
@@ -908,7 +969,11 @@ const VoiceAIChat: React.FC = () => {
         setLoadingStage('');
         
         setTimeout(() => {
+        if (synthesisId !== null && synthesisId !== undefined && synthesisTrackerRef.current) {
           synthesisTrackerRef.current.completeSynthesis(synthesisId);
+        } else {
+          console.log('⚠️ [FALLBACK-TTS-ERROR] Invalid synthesis ID or tracker, skipping completion:', synthesisId);
+          }
         }, 1000);
       };
 
@@ -929,16 +994,24 @@ const VoiceAIChat: React.FC = () => {
           setIsAISpeaking(false);
           setLoadingStage('');
           setTimeout(() => {
-            synthesisTrackerRef.current.completeSynthesis(synthesisId);
+            if (synthesisId !== null && synthesisId !== undefined && synthesisTrackerRef.current) {
+              synthesisTrackerRef.current.completeSynthesis(synthesisId);
+            } else {
+              console.log('⚠️ [BROWSER-TTS] Invalid synthesis ID or tracker, skipping completion:', synthesisId);
+            }
           }, 500);
       };
 
       speechSynthesis.speak(utterance);
-        console.log('Browser TTS started as final fallback');
+      console.log('Browser TTS started as final fallback');
       } else {
         setIsAISpeaking(false);
         setLoadingStage('');
-        synthesisTrackerRef.current.completeSynthesis(synthesisId);
+        if (synthesisId !== null && synthesisId !== undefined && synthesisTrackerRef.current) {
+          synthesisTrackerRef.current.completeSynthesis(synthesisId);
+        } else {
+          console.log('⚠️ [BROWSER-TTS-FALLBACK] Invalid synthesis ID or tracker, skipping completion:', synthesisId);
+        }
       }
     }
   };
@@ -978,7 +1051,7 @@ const VoiceAIChat: React.FC = () => {
     }
   };
 
-  const startConversation = async () => {
+  const startConversation = async (initPrompt?: string) => {
     try {
       setError(null);
       
@@ -992,6 +1065,33 @@ const VoiceAIChat: React.FC = () => {
 
       await connectToRoom(sessionData);
       connectWebSocket(sessionData.session_id);
+
+      // Send initialization prompt if provided
+      if (initPrompt && wsRef.current) {
+        setTimeout(() => {
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({
+              type: 'audio_transcript',
+              text: initPrompt,
+              timestamp: new Date().toISOString()
+            }));
+          } else {
+            console.log('WebSocket not ready, retrying...');
+            setTimeout(() => {
+              if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({
+                  type: 'audio_transcript',
+                  text: initPrompt,
+                  timestamp: new Date().toISOString()
+                }));
+              } else {
+                setError('Failed to connect to server. Please try again.');
+                setIsProcessing(false);
+              }
+            }, 1000);
+          }
+        }, 500);
+      }
 
       setIsRecording(true);
 
@@ -1023,7 +1123,8 @@ const VoiceAIChat: React.FC = () => {
       }
 
       if (sessionRef.current) {
-        await fetch(`http://localhost:8000/api/session/${sessionRef.current.session_id}`, {
+        const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
+        await fetch(`${backendUrl}/api/session/${sessionRef.current.session_id}`, {
           method: 'DELETE',
         });
         sessionRef.current = null;
@@ -1043,12 +1144,34 @@ const VoiceAIChat: React.FC = () => {
 
   const clearConversation = () => {
     setConversation([]);
-    setTranscriptLog([]);
+    // Transcript log clearing removed for production build
     setError(null);
   };
 
   const toggleMute = () => {
-    setIsMuted(prev => !prev);
+    setIsMuted(prev => {
+      const newMutedState = !prev;
+      
+      // If muting, immediately stop speech recognition
+      if (newMutedState && recognitionRef.current) {
+        console.log('🔇 Muting - stopping speech recognition immediately');
+        try {
+          recognitionRef.current.stop();
+          recognitionRef.current = null;
+        } catch (e) {
+          console.log('Speech recognition already stopped');
+        }
+      }
+      // If unmuting and conditions are right, start speech recognition
+      else if (!newMutedState && sessionRef.current && isRoomReady && isRecording && isConnected && !isAISpeaking && !recognitionRef.current) {
+        console.log('🔊 Unmuting - starting speech recognition');
+        setTimeout(() => {
+          startAudioMonitoring(null);
+        }, 100);
+      }
+      
+      return newMutedState;
+    });
   };
 
   const endConversation = async () => {
@@ -1217,18 +1340,18 @@ const VoiceAIChat: React.FC = () => {
                           <Volume2 className="w-6 h-6 text-purple-600 dark:text-purple-400 animate-pulse" />
                           <div className="flex items-center gap-4">
                             <span className="text-purple-900 dark:text-purple-100 font-medium text-lg">AI is speaking... (microphone paused)</span>
-                            <button
-                              onClick={() => {
+          <button 
+            onClick={() => {
                                 console.log('🔧 Manual recovery - forcing speech completion');
                                 setIsAISpeaking(false);
                                 setLoadingStage('');
-                                synthesisTrackerRef.current.reset();
+                                synthesisTrackerRef.current?.reset();
                               }}
                               className="px-3 py-1 text-xs bg-purple-200 hover:bg-purple-300 text-purple-800 rounded-lg transition-colors"
                             >
                               Skip
-                            </button>
-                          </div>
+          </button>
+        </div>
                         </>
                       ) : isProcessing ? (
                         <>
@@ -1264,8 +1387,8 @@ const VoiceAIChat: React.FC = () => {
                                   }}
                                 />
                               ))}
-      </div>
-        </div>
+          </div>
+          </div>
                         </>
                       ) : !isRoomReady && isConnected ? (
                         <>
@@ -1287,8 +1410,8 @@ const VoiceAIChat: React.FC = () => {
                           <Mic className="w-6 h-6 text-green-600 dark:text-green-400" />
                           <span className="text-green-900 dark:text-green-100 font-medium text-lg">Listening... speak naturally</span>
                         </>
-                      )}
-          </div>
+        )}
+      </div>
                   </motion.div>
                 </AnimatePresence>
 

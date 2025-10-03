@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse, Response
 import asyncio
 import json
 import logging
+import time
 from typing import Dict, List
 import uuid
 from pydantic import BaseModel
@@ -31,11 +32,21 @@ app = FastAPI(title="Voice AI Backend", version="1.0.0")
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],  # TODO: Update for production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Security headers middleware
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
 
 # Services
 livekit_service = LiveKitService()
@@ -52,6 +63,79 @@ active_sessions: Dict[str, dict] = {}
 @app.get("/")
 async def root():
     return {"message": "Voice AI Backend is running"}
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "message": "Voice AI Backend is operational"}
+
+@app.get("/api/sessions/active")
+async def get_active_sessions():
+    """Get information about active sessions for monitoring"""
+    import time
+    current_time = time.time()
+    
+    session_info = []
+    for session_id, session_data in active_sessions.items():
+        if session_data.get("is_active", False):
+            # Calculate session age
+            session_age = current_time - session_data.get("created_at", current_time)
+            session_info.append({
+                "session_id": session_id,
+                "room_name": session_data.get("room_name"),
+                "age_seconds": round(session_age, 2),
+                "conversation_length": len(session_data.get("conversation_history", []))
+            })
+    
+    return {
+        "active_sessions": len(session_info),
+        "sessions": session_info,
+        "total_room_minutes": sum(s["age_seconds"] for s in session_info) / 60
+    }
+
+@app.post("/api/sessions/cleanup")
+async def cleanup_idle_sessions():
+    """Clean up idle sessions (safe cleanup endpoint)"""
+    import time
+    current_time = time.time()
+    IDLE_TIMEOUT = 3600  # 1 hour in seconds
+    
+    cleaned_sessions = []
+    sessions_to_remove = []
+    
+    for session_id, session_data in active_sessions.items():
+        if session_data.get("is_active", False):
+            session_age = current_time - session_data.get("created_at", current_time)
+            
+            # Clean up sessions older than 1 hour
+            if session_age > IDLE_TIMEOUT:
+                try:
+                    # Clean up voice pipeline session
+                    await voice_pipeline.end_session(session_id)
+                    
+                    # Clean up LiveKit room
+                    await livekit_service.end_room(session_data.get("room_name"))
+                    
+                    sessions_to_remove.append(session_id)
+                    cleaned_sessions.append({
+                        "session_id": session_id,
+                        "age_seconds": round(session_age, 2)
+                    })
+                    
+                    logger.info(f"🧹 Cleaned up idle session {session_id} (age: {session_age:.2f}s)")
+                    
+                except Exception as e:
+                    logger.error(f"Error cleaning up session {session_id}: {str(e)}")
+    
+    # Remove cleaned sessions
+    for session_id in sessions_to_remove:
+        if session_id in active_sessions:
+            del active_sessions[session_id]
+    
+    return {
+        "cleaned_sessions": len(cleaned_sessions),
+        "sessions": cleaned_sessions,
+        "remaining_active": len(active_sessions)
+    }
 
 @app.post("/api/session/create")
 async def create_session():
@@ -72,7 +156,8 @@ async def create_session():
             "user_token": user_token,
             "voice_session": voice_session,
             "conversation_history": [],
-            "is_active": True
+            "is_active": True,
+            "created_at": time.time()
         }
         
         logger.info(f"Created voice session {session_id} with room {room_name}")
@@ -340,4 +425,6 @@ async def streaming_text_to_speech_endpoint(request: TTSRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import os
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)

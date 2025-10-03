@@ -60,6 +60,9 @@ class VoiceSession:
         self.silence_duration = 0
         self.max_silence_duration = 2.0  # 2 seconds of silence triggers processing
         
+        # Session tracking
+        self.start_time = asyncio.get_event_loop().time()
+        
         # Callbacks
         self.on_transcript: Optional[Callable] = None
         self.on_ai_response: Optional[Callable] = None
@@ -274,6 +277,10 @@ class VoiceSession:
         try:
             if self.room:
                 await self.room.disconnect()
+            
+            # Calculate session duration
+            session_duration = asyncio.get_event_loop().time() - self.start_time
+            logger.info(f"🏠 Voice session {self.session_id} ended after {session_duration:.2f} seconds")
             
             # Clean up audio resources
             self.audio_source = None

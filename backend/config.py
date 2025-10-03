@@ -31,10 +31,8 @@ class Config:
 
 config = Config()
 
-# Debug: Check if API key is loaded
+# Production: Minimal logging for security
 import logging
 debug_logger = logging.getLogger(__name__)
-if config.OPENAI_API_KEY:
-    debug_logger.info(f"OpenAI API key loaded: {config.OPENAI_API_KEY[:10]}...{config.OPENAI_API_KEY[-4:]}")
-else:
-    debug_logger.error("OpenAI API key is empty!")
+if not config.OPENAI_API_KEY:
+    debug_logger.error("OpenAI API key is not configured!")
