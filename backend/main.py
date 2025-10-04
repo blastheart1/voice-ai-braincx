@@ -32,7 +32,12 @@ app = FastAPI(title="Voice AI Backend", version="1.0.0")
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],  # TODO: Update for production
+    allow_origins=[
+        "http://localhost:3000", 
+        "http://127.0.0.1:3000",
+        "https://voice-ai-braincx-63mvquexd-blastheart1s-projects.vercel.app",
+        "https://voice-ai-braincx.vercel.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
