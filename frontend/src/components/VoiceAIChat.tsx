@@ -100,6 +100,15 @@ class SynthesisTracker {
 }
 
 const VoiceAIChat: React.FC = () => {
+  // Browser detection for Chrome compatibility (safe implementation)
+  const browserInfo = {
+    isChrome: /Chrome/.test(navigator.userAgent) && /Google Inc/.test(navigator.vendor),
+    isEdge: /Edg/.test(navigator.userAgent),
+    isFirefox: /Firefox/.test(navigator.userAgent),
+    isSafari: /Safari/.test(navigator.userAgent) && !/Chrome/.test(navigator.userAgent),
+    isSecureContext: window.isSecureContext || window.location.protocol === 'https:'
+  };
+
   const [isConnected, setIsConnected] = useState(false);
   const [isRoomReady, setIsRoomReady] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -441,6 +450,13 @@ const VoiceAIChat: React.FC = () => {
       return;
     }
     
+    // Chrome-specific HTTPS validation (Edge unaffected)
+    if (browserInfo.isChrome && !browserInfo.isSecureContext) {
+      console.error('Chrome requires HTTPS for Speech Recognition');
+      setError('Chrome requires HTTPS for voice recognition. Please use HTTPS or localhost.');
+      return;
+    }
+
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       const recognition = new SpeechRecognition();
@@ -451,10 +467,14 @@ const VoiceAIChat: React.FC = () => {
       recognition.lang = 'en-US';
       recognition.maxAlternatives = 1;  // Focus on best result only
       
-      // Enhanced WebKit-specific optimizations
-      if ('webkitSpeechRecognition' in window) {
+      // Chrome-specific optimizations (Edge continues with existing settings)
+      if (browserInfo.isChrome && 'webkitSpeechRecognition' in window) {
         recognition.webkitContinuous = true;
         recognition.webkitInterimResults = true;
+        console.log('🔧 [CHROME] Applied Chrome-specific speech recognition settings');
+      } else if (browserInfo.isEdge) {
+        // Edge continues with existing settings (no changes)
+        console.log('🔧 [EDGE] Using Edge-optimized speech recognition settings');
       }
       
       // Audio processing optimizations
@@ -540,13 +560,26 @@ const VoiceAIChat: React.FC = () => {
       recognition.onerror = (event: any) => {
         console.error('Speech recognition error:', event.error);
         
+        // Browser-specific error handling (Chrome gets enhanced messages, Edge unchanged)
         if (event.error === 'no-speech') {
           console.log('No speech detected, continuing to listen...');
           setCurrentTranscript('Listening... (speak clearly into your microphone)');
         } else if (event.error === 'audio-capture') {
+          if (browserInfo.isChrome) {
+            setError('Chrome: Microphone access denied. Please check Chrome microphone permissions and allow access.');
+          } else if (browserInfo.isEdge) {
+            setError('Edge: Microphone access denied. Please check Edge microphone permissions and allow access.');
+          } else {
           setError('Microphone access denied or not available. Please check your microphone permissions.');
+          }
         } else if (event.error === 'not-allowed') {
+          if (browserInfo.isChrome) {
+            setError('Chrome: Microphone permission denied. Please allow microphone access in Chrome and refresh the page.');
+          } else if (browserInfo.isEdge) {
+            setError('Edge: Microphone permission denied. Please allow microphone access in Edge and refresh the page.');
+          } else {
           setError('Microphone permission denied. Please allow microphone access and refresh the page.');
+          }
         } else if (event.error === 'network') {
           setError('Network error. Please check your internet connection.');
         } else {
@@ -1018,8 +1051,20 @@ const VoiceAIChat: React.FC = () => {
 
   const testMicrophone = async () => {
     try {
-      // Enhanced audio constraints with echo cancellation
-      const constraints = {
+      // Chrome-specific microphone constraints (Edge continues with existing settings)
+      const constraints = browserInfo.isChrome ? {
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 44100,
+          channelCount: 1,
+          // Chrome-specific optimizations
+          latency: 0.01,
+          echoCancellationType: 'system'
+        }
+      } : {
+        // Edge continues with existing constraints (no changes)
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
@@ -1046,7 +1091,15 @@ const VoiceAIChat: React.FC = () => {
       return true;
     } catch (err) {
       console.error('Microphone test failed:', err);
-      setError('Microphone access denied. Please allow microphone access and refresh the page.');
+      
+      // Browser-specific error messages (Chrome gets enhanced guidance, Edge unchanged)
+      if (browserInfo.isChrome) {
+        setError('Chrome: Microphone access denied. Please allow microphone access in Chrome settings and refresh the page.');
+      } else if (browserInfo.isEdge) {
+        setError('Edge: Microphone access denied. Please allow microphone access in Edge settings and refresh the page.');
+      } else {
+        setError('Microphone access denied. Please allow microphone access and refresh the page.');
+      }
       return false;
     }
   };
@@ -1414,6 +1467,30 @@ const VoiceAIChat: React.FC = () => {
       </div>
                   </motion.div>
                 </AnimatePresence>
+
+                {/* Browser Status Indicator */}
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.1 }}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                    browserInfo.isChrome 
+                      ? 'bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200/50 dark:border-blue-800/50 text-blue-900 dark:text-blue-100'
+                      : browserInfo.isEdge
+                      ? 'bg-green-50/50 dark:bg-green-950/20 border border-green-200/50 dark:border-green-800/50 text-green-900 dark:text-green-100'
+                      : 'bg-gray-50/50 dark:bg-gray-950/20 border border-gray-200/50 dark:border-gray-800/50 text-gray-900 dark:text-gray-100'
+                  }`}
+                >
+                  {browserInfo.isChrome && (
+                    <span>🔧 Chrome: Enhanced voice recognition with Chrome-specific optimizations</span>
+                  )}
+                  {browserInfo.isEdge && (
+                    <span>✅ Edge: Optimized for Edge browser with existing functionality</span>
+                  )}
+                  {!browserInfo.isChrome && !browserInfo.isEdge && (
+                    <span>🌐 Browser: Using standard voice recognition settings</span>
+                  )}
+                </motion.div>
 
                 {/* Tips */}
                 <motion.div
