@@ -467,14 +467,15 @@ const VoiceAIChat: React.FC = () => {
       recognition.lang = 'en-US';
       recognition.maxAlternatives = 1;  // Focus on best result only
       
-      // Chrome-specific optimizations (Edge continues with existing settings)
-      if (browserInfo.isChrome && 'webkitSpeechRecognition' in window) {
+      // WebKit optimizations for both Chrome and Edge (both use webkitSpeechRecognition)
+      if ('webkitSpeechRecognition' in window) {
         recognition.webkitContinuous = true;
         recognition.webkitInterimResults = true;
-        console.log('🔧 [CHROME] Applied Chrome-specific speech recognition settings');
-      } else if (browserInfo.isEdge) {
-        // Edge continues with existing settings (no changes)
-        console.log('🔧 [EDGE] Using Edge-optimized speech recognition settings');
+        if (browserInfo.isChrome) {
+          console.log('🔧 [CHROME] Applied Chrome-specific speech recognition settings');
+        } else if (browserInfo.isEdge) {
+          console.log('🔧 [EDGE] Applied Edge-specific speech recognition settings');
+        }
       }
       
       // Audio processing optimizations
@@ -589,10 +590,8 @@ const VoiceAIChat: React.FC = () => {
 
       recognition.onend = () => {
         console.log('[RECOGNITION-END] Speech recognition ended');
-        // Clear the reference when recognition ends
-        if (recognitionRef.current === recognition) {
-          recognitionRef.current = null;
-        }
+        // Always clear the reference when recognition ends
+        recognitionRef.current = null;
         
         // No automatic restart - synthesis completion handler will manage restarts
         if (isRecording && isConnected && isRoomReady && !isAISpeaking) {
@@ -1098,7 +1097,7 @@ const VoiceAIChat: React.FC = () => {
       } else if (browserInfo.isEdge) {
         setError('Edge: Microphone access denied. Please allow microphone access in Edge settings and refresh the page.');
       } else {
-        setError('Microphone access denied. Please allow microphone access and refresh the page.');
+      setError('Microphone access denied. Please allow microphone access and refresh the page.');
       }
       return false;
     }
