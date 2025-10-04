@@ -15,6 +15,6 @@
       "dest": "/frontend/$1"
     }
   ],
-  "outputDirectory": "frontend/build",
+  "outputDirectory": "build",
   "framework": "create-react-app"
 }
