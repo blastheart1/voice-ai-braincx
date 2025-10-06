@@ -450,10 +450,16 @@ const VoiceAIChat: React.FC = () => {
       return;
     }
     
-    // Chrome-specific HTTPS validation (Edge unaffected)
+    // Browser-specific HTTPS validation
     if (browserInfo.isChrome && !browserInfo.isSecureContext) {
       console.error('Chrome requires HTTPS for Speech Recognition');
       setError('Chrome requires HTTPS for voice recognition. Please use HTTPS or localhost.');
+      return;
+    }
+    
+    if (browserInfo.isSafari && !browserInfo.isSecureContext) {
+      console.error('Safari requires HTTPS for Speech Recognition');
+      setError('Safari requires HTTPS for voice recognition. Please use HTTPS or localhost.');
       return;
     }
 
@@ -467,7 +473,7 @@ const VoiceAIChat: React.FC = () => {
       recognition.lang = 'en-US';
       recognition.maxAlternatives = 1;  // Focus on best result only
       
-      // WebKit optimizations for both Chrome and Edge (both use webkitSpeechRecognition)
+      // WebKit optimizations for Chrome, Edge, and Safari
       if ('webkitSpeechRecognition' in window) {
         recognition.webkitContinuous = true;
         recognition.webkitInterimResults = true;
@@ -475,6 +481,8 @@ const VoiceAIChat: React.FC = () => {
           console.log('🔧 [CHROME] Applied Chrome-specific speech recognition settings');
         } else if (browserInfo.isEdge) {
           console.log('🔧 [EDGE] Applied Edge-specific speech recognition settings');
+        } else if (browserInfo.isSafari) {
+          console.log('🔧 [SAFARI] Applied Safari-specific speech recognition settings for mobile optimization');
         }
       }
       
@@ -570,16 +578,20 @@ const VoiceAIChat: React.FC = () => {
             setError('Chrome: Microphone access denied. Please check Chrome microphone permissions and allow access.');
           } else if (browserInfo.isEdge) {
             setError('Edge: Microphone access denied. Please check Edge microphone permissions and allow access.');
+          } else if (browserInfo.isSafari) {
+            setError('Safari: Microphone access denied. Please tap "Allow" when prompted, or enable microphone access in Safari Settings > Privacy & Security > Microphone.');
           } else {
-          setError('Microphone access denied or not available. Please check your microphone permissions.');
+            setError('Microphone access denied or not available. Please check your microphone permissions.');
           }
         } else if (event.error === 'not-allowed') {
           if (browserInfo.isChrome) {
             setError('Chrome: Microphone permission denied. Please allow microphone access in Chrome and refresh the page.');
           } else if (browserInfo.isEdge) {
             setError('Edge: Microphone permission denied. Please allow microphone access in Edge and refresh the page.');
+          } else if (browserInfo.isSafari) {
+            setError('Safari: Microphone permission denied. Please tap "Allow" when prompted, or enable microphone access in Safari Settings > Privacy & Security > Microphone.');
           } else {
-          setError('Microphone permission denied. Please allow microphone access and refresh the page.');
+            setError('Microphone permission denied. Please allow microphone access and refresh the page.');
           }
         } else if (event.error === 'network') {
           setError('Network error. Please check your internet connection.');
@@ -1050,7 +1062,7 @@ const VoiceAIChat: React.FC = () => {
 
   const testMicrophone = async () => {
     try {
-      // Chrome-specific microphone constraints (Edge continues with existing settings)
+      // Browser-specific microphone constraints
       const constraints = browserInfo.isChrome ? {
         audio: {
           echoCancellation: true,
@@ -1060,6 +1072,18 @@ const VoiceAIChat: React.FC = () => {
           channelCount: 1,
           // Chrome-specific optimizations
           latency: 0.01,
+          echoCancellationType: 'system'
+        }
+      } : browserInfo.isSafari ? {
+        // Safari-specific constraints for better mobile performance
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 48000,  // Safari prefers 48kHz on mobile
+          channelCount: 1,
+          // Safari-specific mobile optimizations
+          latency: 0.02,  // Slightly higher latency for stability
           echoCancellationType: 'system'
         }
       } : {
@@ -1074,7 +1098,11 @@ const VoiceAIChat: React.FC = () => {
       };
       
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      console.log('Microphone access granted with echo cancellation enabled');
+      if (browserInfo.isSafari) {
+        console.log('🔧 [SAFARI] Microphone access granted with Safari-optimized audio settings');
+      } else {
+        console.log('Microphone access granted with echo cancellation enabled');
+      }
       
       // Log the actual constraints that were applied
       const track = stream.getAudioTracks()[0];
@@ -1091,13 +1119,15 @@ const VoiceAIChat: React.FC = () => {
     } catch (err) {
       console.error('Microphone test failed:', err);
       
-      // Browser-specific error messages (Chrome gets enhanced guidance, Edge unchanged)
+      // Browser-specific error messages
       if (browserInfo.isChrome) {
         setError('Chrome: Microphone access denied. Please allow microphone access in Chrome settings and refresh the page.');
       } else if (browserInfo.isEdge) {
         setError('Edge: Microphone access denied. Please allow microphone access in Edge settings and refresh the page.');
+      } else if (browserInfo.isSafari) {
+        setError('Safari: Microphone access denied. Please tap "Allow" when prompted, or enable microphone access in Safari Settings > Privacy & Security > Microphone.');
       } else {
-      setError('Microphone access denied. Please allow microphone access and refresh the page.');
+        setError('Microphone access denied. Please allow microphone access and refresh the page.');
       }
       return false;
     }
