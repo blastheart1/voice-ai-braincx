@@ -126,6 +126,9 @@ const VoiceAIChat: React.FC = () => {
   const [loadingStage, setLoadingStage] = useState<string>('');
   const [processingStartTime, setProcessingStartTime] = useState<number>(0);
   
+  // Safari-specific microphone permission state
+  const [safariMicPermissionGranted, setSafariMicPermissionGranted] = useState(false);
+  
   // Speech processing delay to prevent double triggers
   const speechDelayRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -441,6 +444,12 @@ const VoiceAIChat: React.FC = () => {
     // Check if user is muted - don't start speech recognition
     if (isMuted) {
       console.log('User is muted, skipping speech recognition start');
+      return;
+    }
+    
+    // Safari-specific check: don't start speech recognition without permission
+    if (browserInfo.isSafari && !safariMicPermissionGranted) {
+      console.log('🔧 [SAFARI] No microphone permission yet, skipping speech recognition start');
       return;
     }
     
@@ -1060,6 +1069,34 @@ const VoiceAIChat: React.FC = () => {
     }
   };
 
+  // Safari-specific microphone permission request
+  const requestSafariMicrophonePermission = async () => {
+    try {
+      console.log('🔧 [SAFARI] Requesting microphone permission with user gesture');
+      // Safari requires user gesture for microphone access
+      const constraints = {
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 48000,  // Safari prefers 48kHz on mobile
+          channelCount: 1,
+          latency: 0.02,  // Slightly higher latency for stability
+          echoCancellationType: 'system'
+        }
+      };
+      
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      console.log('🔧 [SAFARI] Microphone permission granted');
+      stream.getTracks().forEach(track => track.stop());
+      return true;
+    } catch (err) {
+      console.error('🔧 [SAFARI] Microphone permission denied:', err);
+      setError('Safari: Microphone access denied. Please tap "Allow" when prompted, or enable microphone access in Safari Settings > Privacy & Security > Microphone.');
+      return false;
+    }
+  };
+
   const testMicrophone = async () => {
     try {
       // Browser-specific microphone constraints
@@ -1137,9 +1174,17 @@ const VoiceAIChat: React.FC = () => {
     try {
       setError(null);
       
-      const microphoneOk = await testMicrophone();
-      if (!microphoneOk) {
-        return;
+      // Safari-specific microphone permission handling
+      if (browserInfo.isSafari && !safariMicPermissionGranted) {
+        console.log('🔧 [SAFARI] Safari detected, skipping automatic microphone test');
+        // Safari will request permission when user clicks the microphone button
+        setSafariMicPermissionGranted(false);
+      } else {
+        // Chrome and Edge continue with existing microphone test
+        const microphoneOk = await testMicrophone();
+        if (!microphoneOk) {
+          return;
+        }
       }
       
       const sessionData = await createSession();
@@ -1230,7 +1275,24 @@ const VoiceAIChat: React.FC = () => {
     setError(null);
   };
 
-  const toggleMute = () => {
+  const toggleMute = async () => {
+    // Safari-specific microphone permission handling
+    if (browserInfo.isSafari && !safariMicPermissionGranted && !isMuted) {
+      console.log('🔧 [SAFARI] Requesting microphone permission on mute toggle');
+      const permissionGranted = await requestSafariMicrophonePermission();
+      if (!permissionGranted) {
+        return; // Don't proceed if permission denied
+      }
+      setSafariMicPermissionGranted(true);
+      // Start speech recognition after permission is granted
+      setTimeout(() => {
+        if (isConnected && isRoomReady && !isAISpeaking && !isProcessing) {
+          console.log('🔧 [SAFARI] Starting speech recognition after permission granted');
+          startAudioMonitoring(null);
+        }
+      }, 500); // Small delay to ensure state is updated
+    }
+    
     setIsMuted(prev => {
       const newMutedState = !prev;
       
@@ -1246,6 +1308,11 @@ const VoiceAIChat: React.FC = () => {
       }
       // If unmuting and conditions are right, start speech recognition
       else if (!newMutedState && sessionRef.current && isRoomReady && isRecording && isConnected && !isAISpeaking && !recognitionRef.current) {
+        // Safari-specific check: ensure microphone permission is granted
+        if (browserInfo.isSafari && !safariMicPermissionGranted) {
+          console.log('🔧 [SAFARI] Cannot unmute without microphone permission');
+          return newMutedState; // Keep muted if no permission
+        }
         console.log('🔊 Unmuting - starting speech recognition');
         setTimeout(() => {
           startAudioMonitoring(null);
@@ -1341,43 +1408,43 @@ const VoiceAIChat: React.FC = () => {
               transition={{ duration: 0.4 }}
               className="flex flex-col h-screen"
             >
-              {/* Header */}
+              {/* Header - Mobile optimized */}
               <motion.header
                 initial={{ y: -20, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
                 transition={{ delay: 0.1 }}
-                className="bg-white/80 dark:bg-gray-900/80 backdrop-blur-xl border-b border-gray-200/50 dark:border-gray-700/50 px-6 py-4"
+                className="bg-white/80 dark:bg-gray-900/80 backdrop-blur-xl border-b border-gray-200/50 dark:border-gray-700/50 px-3 md:px-6 py-2 md:py-4"
               >
                 <div className="flex items-center justify-between max-w-6xl mx-auto">
-                  <div className="flex items-center gap-3">
-                    <div className="w-3 h-3 rounded-full bg-green-500 shadow-lg shadow-green-500/50 animate-pulse" />
-                    <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Active Session</h2>
+                  <div className="flex items-center gap-2 md:gap-3">
+                    <div className="w-2 h-2 md:w-3 md:h-3 rounded-full bg-green-500 shadow-lg shadow-green-500/50 animate-pulse" />
+                    <h2 className="text-sm md:text-xl font-semibold text-gray-900 dark:text-white">Active Session</h2>
                   </div>
                   
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-1 md:gap-3">
                     <motion.button
                       whileHover={{ scale: 1.05, y: -1 }}
                       whileTap={{ scale: 0.95 }}
                       onClick={toggleMute}
-                      className={`px-4 py-2.5 rounded-xl font-medium flex items-center gap-2 transition-all duration-200 shadow-lg ${
+                      className={`px-2 py-1.5 md:px-4 md:py-2.5 rounded-lg md:rounded-xl font-medium flex items-center gap-1 md:gap-2 transition-all duration-200 shadow-lg text-xs md:text-sm ${
                         isMuted
                           ? 'bg-red-500 hover:bg-red-600 text-white shadow-red-500/25'
                           : 'bg-blue-500 hover:bg-blue-600 text-white shadow-blue-500/25'
                       }`}
                     >
-                      {isMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-                      <span>{isMuted ? 'Unmute' : 'Mute'}</span>
+                      {isMuted ? <MicOff className="w-3 h-3 md:w-4 md:h-4" /> : <Mic className="w-3 h-3 md:w-4 md:h-4" />}
+                      <span className="hidden md:inline">{isMuted ? 'Unmute' : 'Mute'}</span>
                     </motion.button>
 
                     <motion.button
                       whileHover={{ scale: 1.05, y: -1 }}
                       whileTap={{ scale: 0.95 }}
-            onClick={clearConversation}
+                      onClick={clearConversation}
                       disabled={!isConnected}
-                      className="px-4 py-2.5 rounded-xl font-medium flex items-center gap-2 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-gray-900/5"
+                      className="px-2 py-1.5 md:px-4 md:py-2.5 rounded-lg md:rounded-xl font-medium flex items-center gap-1 md:gap-2 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-gray-900/5 text-xs md:text-sm"
                     >
-                      <Trash2 className="w-4 h-4" />
-                      <span>Clear</span>
+                      <Trash2 className="w-3 h-3 md:w-4 md:h-4" />
+                      <span className="hidden md:inline">Clear</span>
                     </motion.button>
 
                     <motion.button
@@ -1385,10 +1452,10 @@ const VoiceAIChat: React.FC = () => {
                       whileTap={{ scale: 0.95 }}
                       onClick={endConversation}
                       disabled={isProcessing}
-                      className="px-4 py-2.5 rounded-xl font-medium flex items-center gap-2 bg-red-500 hover:bg-red-600 text-white transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-red-500/25"
+                      className="px-2 py-1.5 md:px-4 md:py-2.5 rounded-lg md:rounded-xl font-medium flex items-center gap-1 md:gap-2 bg-red-500 hover:bg-red-600 text-white transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-red-500/25 text-xs md:text-sm"
                     >
-                      <LogOut className="w-4 h-4" />
-                      <span>End</span>
+                      <LogOut className="w-3 h-3 md:w-4 md:h-4" />
+                      <span className="hidden md:inline">End</span>
                     </motion.button>
         </div>
           </div>
@@ -1487,26 +1554,38 @@ const VoiceAIChat: React.FC = () => {
                           <MicOff className="w-6 h-6 text-red-600 dark:text-red-400" />
                           <span className="text-red-900 dark:text-red-100 font-medium text-lg">Microphone muted</span>
                         </>
+                      ) : browserInfo.isSafari && !safariMicPermissionGranted ? (
+                        <>
+                          <Mic className="w-6 h-6 text-amber-600 dark:text-amber-400" />
+                          <span className="text-amber-900 dark:text-amber-100 font-medium text-lg">Tap Mute button to enable microphone</span>
+                        </>
+                      ) : browserInfo.isSafari && safariMicPermissionGranted && isMuted ? (
+                        <>
+                          <Mic className="w-6 h-6 text-blue-600 dark:text-blue-400" />
+                          <span className="text-blue-900 dark:text-blue-100 font-medium text-lg">Tap Unmute to start listening</span>
+                        </>
                       ) : (
                         <>
                           <Mic className="w-6 h-6 text-green-600 dark:text-green-400" />
                           <span className="text-green-900 dark:text-green-100 font-medium text-lg">Listening... speak naturally</span>
                         </>
-        )}
+                      )}
       </div>
                   </motion.div>
                 </AnimatePresence>
 
-                {/* Browser Status Indicator */}
+                {/* Browser Status Indicator - Hidden on mobile */}
                 <motion.div
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: 0.1 }}
-                  className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                  className={`hidden md:block px-4 py-2 rounded-lg text-sm font-medium ${
                     browserInfo.isChrome 
                       ? 'bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200/50 dark:border-blue-800/50 text-blue-900 dark:text-blue-100'
                       : browserInfo.isEdge
                       ? 'bg-green-50/50 dark:bg-green-950/20 border border-green-200/50 dark:border-green-800/50 text-green-900 dark:text-green-100'
+                      : browserInfo.isSafari
+                      ? 'bg-purple-50/50 dark:bg-purple-950/20 border border-purple-200/50 dark:border-purple-800/50 text-purple-900 dark:text-purple-100'
                       : 'bg-gray-50/50 dark:bg-gray-950/20 border border-gray-200/50 dark:border-gray-800/50 text-gray-900 dark:text-gray-100'
                   }`}
                 >
@@ -1516,34 +1595,37 @@ const VoiceAIChat: React.FC = () => {
                   {browserInfo.isEdge && (
                     <span>✅ Edge: Optimized for Edge browser with existing functionality</span>
                   )}
-                  {!browserInfo.isChrome && !browserInfo.isEdge && (
+                  {browserInfo.isSafari && (
+                    <span>🍎 Safari: Mobile-optimized voice recognition with Safari-specific settings</span>
+                  )}
+                  {!browserInfo.isChrome && !browserInfo.isEdge && !browserInfo.isSafari && (
                     <span>🌐 Browser: Using standard voice recognition settings</span>
                   )}
                 </motion.div>
 
-                {/* Tips */}
+                {/* Tips - Hidden on mobile */}
                 <motion.div
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: 0.2 }}
-                  className="px-5 py-3 bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200/50 dark:border-blue-800/50 rounded-xl"
+                  className="hidden md:block px-5 py-3 bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200/50 dark:border-blue-800/50 rounded-xl"
                 >
                   <p className="text-sm text-blue-900 dark:text-blue-100 font-light">
                     <span className="font-medium">💡 Tips:</span> Speak clearly, ensure microphone permissions are granted, and check that your microphone is not muted.
                   </p>
                 </motion.div>
 
-                {/* Error Message */}
+                {/* Error Message - Mobile optimized */}
                 <AnimatePresence>
-      {error && (
+                  {error && (
                     <motion.div
                       initial={{ opacity: 0, y: -10, scale: 0.95 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, y: -10, scale: 0.95 }}
                       transition={{ duration: 0.3 }}
-                      className="px-5 py-4 bg-red-50/80 dark:bg-red-950/30 border border-red-200/50 dark:border-red-800/50 rounded-xl shadow-lg shadow-red-500/10"
+                      className="px-3 py-2 md:px-5 md:py-4 bg-red-50/80 dark:bg-red-950/30 border border-red-200/50 dark:border-red-800/50 rounded-xl shadow-lg shadow-red-500/10"
                     >
-                      <p className="text-red-900 dark:text-red-100 font-medium">⚠️ {error}</p>
+                      <p className="text-red-900 dark:text-red-100 font-medium text-sm md:text-base">⚠️ {error}</p>
                     </motion.div>
                   )}
                 </AnimatePresence>
