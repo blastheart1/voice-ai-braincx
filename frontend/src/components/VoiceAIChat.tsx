@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Room, RoomEvent, Track, RemoteTrack, RemoteParticipant } from 'livekit-client';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Mic, MicOff, Trash2, LogOut, Send, Loader2, Volume2, MessageSquare, Clock } from 'lucide-react';
+import ToSModal from './ToSModal';
 // Removed unused UI components - using inline styles for production build
 
 // TypeScript declarations for Web APIs
@@ -125,6 +126,9 @@ const VoiceAIChat: React.FC = () => {
   // Enhanced loading states
   const [loadingStage, setLoadingStage] = useState<string>('');
   const [processingStartTime, setProcessingStartTime] = useState<number>(0);
+  
+  // ToS Modal state
+  const [showToS, setShowToS] = useState(false);
   
   // Speech processing delay to prevent double triggers
   const speechDelayRef = useRef<NodeJS.Timeout | null>(null);
@@ -467,13 +471,21 @@ const VoiceAIChat: React.FC = () => {
       recognition.lang = 'en-US';
       recognition.maxAlternatives = 1;  // Focus on best result only
       
-      // WebKit optimizations for both Chrome and Edge (both use webkitSpeechRecognition)
+      // Browser-specific speech recognition optimizations
       if ('webkitSpeechRecognition' in window) {
         recognition.webkitContinuous = true;
         recognition.webkitInterimResults = true;
+        
         if (browserInfo.isChrome) {
+          // Chrome-specific optimizations for better responsiveness
+          recognition.maxAlternatives = 1;
+          recognition.lang = 'en-US';
+          // Chrome benefits from more aggressive interim processing
           console.log('🔧 [CHROME] Applied Chrome-specific speech recognition settings');
         } else if (browserInfo.isEdge) {
+          // Edge-specific optimizations (already responsive)
+          recognition.maxAlternatives = 1;
+          recognition.lang = 'en-US';
           console.log('🔧 [EDGE] Applied Edge-specific speech recognition settings');
         }
       }
@@ -526,8 +538,11 @@ const VoiceAIChat: React.FC = () => {
           }
         }
 
-        if (finalTranscript) {
-          console.log('User speech detected:', finalTranscript);
+        // Process speech with improved timing - use interim results with timeout
+        const currentTranscript = finalTranscript || interimTranscript;
+        
+        if (currentTranscript) {
+          console.log('User speech detected:', currentTranscript);
           
           // Check if this might be AI speech being picked up by microphone
           const aiPhrases = [
@@ -535,26 +550,58 @@ const VoiceAIChat: React.FC = () => {
             'how can i help', 'what can i do', 'i\'m here to help', 'let me know'
           ];
           
-          const lowerTranscript = finalTranscript.toLowerCase();
+          const lowerTranscript = currentTranscript.toLowerCase();
           const isLikelyAISpeech = aiPhrases.some(phrase => lowerTranscript.includes(phrase));
           
           if (isLikelyAISpeech) {
-            console.log('Detected potential AI speech feedback, ignoring:', finalTranscript);
+            console.log('Detected potential AI speech feedback, ignoring:', currentTranscript);
             return;
           }
           
-        // If AI is speaking, ignore this input (but allow during processing)
-        if (isAISpeaking) {
-          console.log('AI is speaking, ignoring user speech:', finalTranscript);
-          return;
-        }
+          // If AI is speaking, ignore this input (but allow during processing)
+          if (isAISpeaking) {
+            console.log('AI is speaking, ignoring user speech:', currentTranscript);
+            return;
+          }
           
-          // Process user speech immediately - no delay
-          console.log('Processing user speech immediately:', finalTranscript);
-          handleUserSpeech(finalTranscript);
-          setCurrentTranscript('');
-        } else {
-          setCurrentTranscript(interimTranscript);
+          // Browser-specific speech processing strategies
+          if (finalTranscript) {
+            // Process final transcript immediately (all browsers)
+            console.log('Processing final user speech:', finalTranscript);
+            handleUserSpeech(finalTranscript);
+            setCurrentTranscript('');
+          } else if (interimTranscript && interimTranscript.length > 10) {
+            // Browser-specific interim processing
+            let timeout: number;
+            let minLength: number;
+            
+            if (browserInfo.isChrome) {
+              // Chrome: More aggressive processing due to slower final results
+              timeout = 1200; // Shorter timeout for Chrome
+              minLength = 8;  // Lower minimum length
+              console.log(`🔧 [CHROME] Processing interim speech after ${timeout}ms (min ${minLength} chars)`);
+            } else if (browserInfo.isEdge) {
+              // Edge: Balanced processing (already responsive)
+              timeout = 1800; // Medium timeout for Edge
+              minLength = 12; // Higher minimum length for accuracy
+              console.log(`🔧 [EDGE] Processing interim speech after ${timeout}ms (min ${minLength} chars)`);
+            } else {
+              // Other browsers: Conservative approach
+              timeout = 2000; // Longer timeout for safety
+              minLength = 15; // Higher minimum length
+              console.log(`🔧 [OTHER] Processing interim speech after ${timeout}ms (min ${minLength} chars)`);
+            }
+            
+            setTimeout(() => {
+              if (!isAISpeaking && interimTranscript.length >= minLength) {
+                console.log(`Processing interim user speech (${interimTranscript.length} chars):`, interimTranscript);
+                handleUserSpeech(interimTranscript);
+                setCurrentTranscript('');
+              }
+            }, timeout);
+          }
+          
+          setCurrentTranscript(currentTranscript);
         }
       };
 
@@ -1599,6 +1646,9 @@ const VoiceAIChat: React.FC = () => {
             </motion.div>
           )}
         </AnimatePresence>
+        
+        {/* Terms of Service Modal */}
+        <ToSModal onAgree={() => setShowToS(false)} />
     </div>
   );
 };
